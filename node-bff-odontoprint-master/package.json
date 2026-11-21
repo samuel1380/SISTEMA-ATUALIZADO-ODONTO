@@ -1,0 +1,118 @@
+{
+  "name": "@hunter-solucoes/node-bff-odontoprint",
+  "version": "1.0.0",
+  "description": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hunter-solucoes/node-bff-odontoprint.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/hunter-solucoes/node-bff-odontoprint/issues"
+  },
+  "homepage": "https://github.com/hunter-solucoes/node-bff-odontoprint#readme",
+  "private": false,
+  "scripts": {
+    "start": "node dist/src/main",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "build": "rimraf dist && nest build",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage --testPathIgnorePatterns",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.3.0",
+    "@aws-sdk/node-http-handler": "^3.3.0",
+    "@aws-sdk/types": "^3.556.0",
+    "@hunter-solucoes/node-arqt-base-gerenciador-usuarios": "file:../node-arqt-base-gerenciador-usuarios-main",
+    "@nestjs/cli": "^10.3.2",
+    "@nestjs/common": "^10.3.8",
+    "@nestjs/core": "^10.3.8",
+    "@nestjs/event-emitter": "^2.0.4",
+    "@nestjs/jwt": "^10.2.0",
+    "@nestjs/passport": "^10.0.3",
+    "@nestjs/platform-express": "^10.3.8",
+    "@nestjs/schedule": "^4.1.0",
+    "@nestjs/swagger": "^7.3.1",
+    "@nestjs/typeorm": "^10.0.2",
+    "axios": "^0.20.0",
+    "body-parser": "^1.19.0",
+    "class-transformer": "^0.2.3",
+    "class-validator": "^0.12.2",
+    "dotenv": "^8.6.0",
+    "helmet": "^4.5.0",
+    "jsonwebtoken": "^9.0.0",
+    "multer": "^1.4.2",
+    "mysql2": "^3.9.1",
+    "nestjs-form-data": "^1.9.0",
+    "nodemailer": "^6.5.0",
+    "ofx-js": "^0.2.0",
+    "passport": "^0.2.2",
+    "passport-jwt": "^4.0.0",
+    "passport-local": "^1.0.0",
+    "reflect-metadata": "^0.1.13",
+    "rimraf": "^5.0.7",
+    "rxjs": "^7.8.1",
+    "swagger-ui-express": "^5.0.0",
+    "ts-node": "^10.9.2",
+    "typeorm": "^0.3.20",
+    "typeorm-transactional-cls-hooked": "^0.1.20",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@nestjs/schematics": "^10.1.1",
+    "@nestjs/testing": "^10.3.8",
+    "@types/express": "^4.17.9",
+    "@types/jest": "^29.5.12",
+    "@types/multer": "^1.4.5",
+    "@types/node": "^20.12.12",
+    "@types/nodemailer": "^6.4.1",
+    "@types/passport-jwt": "^4.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.9.0",
+    "@typescript-eslint/parser": "^7.9.0",
+    "aws-sdk": "^2.868.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-import": "^2.29.1",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.5",
+    "ts-jest": "^29.1.2",
+    "ts-loader": "^6.2.1",
+    "tsconfig-paths": "^3.9.0",
+    "typescript": "^5.4.5"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".spec.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^src/(.*)": "<rootDir>/$1"
+    },
+    "coveragePathIgnorePatterns": [
+      ".schema.ts"
+    ],
+    "setupFiles": [
+      "../jest-setup-file.ts"
+    ]
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com/:_authToken="
+  },
+  "_moduleAliases": {
+    "@src": "./src"
+  }
+}

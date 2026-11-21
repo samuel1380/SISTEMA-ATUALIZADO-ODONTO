@@ -1,0 +1,24 @@
+node_modules
+.editorconfig
+.env
+.env.sample
+.gitignore
+.prettierrc
+docker-compose.yml
+Dockerfile
+jest-setup-files.ts
+nest-cli.json
+package-lock.json
+README.node_module
+
+# source
+**/*.ts
+*.ts
+
+# definitions
+!**/*.d.ts
+!*.d.ts
+
+
+*.sql
+**/*.sql

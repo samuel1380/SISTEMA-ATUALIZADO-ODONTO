@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+*/node_modules/
+*/*/node_modules/
+jspm_packages/
+bower_components/
+
+# Angular & Build caches
+.angular/
+*/.angular/
+*/*/.angular/
+.sass-cache/
+.cache/
+*/.cache/
+dist/
+*/dist/
+*/*/dist/
+tmp/
+*/tmp/
+out-tsc/
+build/Release/
+
+# Logs & Runtime data
+logs/
+*/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tunnel.log
+
+# Git sub-backups
+.git_backup/
+*/.git_backup/
+
+# Environment files with sensitive credentials
+*.env
+*.env.test
+!*.env.example
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+

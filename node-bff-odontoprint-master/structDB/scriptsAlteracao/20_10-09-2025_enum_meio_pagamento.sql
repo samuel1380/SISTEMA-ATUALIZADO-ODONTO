@@ -1,0 +1,13 @@
+-- =====================================================================================
+-- SCRIPT DE ALTERAÇÃO DA TABELA TbFinanceiroParcela
+-- =====================================================================================
+--
+-- OBJETIVO:
+-- Atualizar a coluna `meioPagamento` para incluir as novas opções 'PIX' e
+-- ajustar 'TRANSFERENCIA' para 'TRANSFERENCIA_BANCARIA', alinhando o banco de dados
+-- com a definição da entidade no código da aplicação.
+--
+-- !!! IMPORTANTE: FAÇA UM BACKUP COMPLETO DO BANCO DE DADOS ANTES DE EXECUTAR !!!
+--
+-- =====================================================================================
+ALTER TABLE odontoprint_db.TbFinanceiroParcela MODIFY COLUMN meioPagamento enum('DINHEIRO','CARTAO_CREDITO','CARTAO_DEBITO','CHEQUE','BOLETO','TRANSFERENCIA', 'PIX') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL;

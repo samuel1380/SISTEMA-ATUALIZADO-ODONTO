@@ -1,0 +1,40 @@
+version: '3.3'
+
+networks:
+  dbnet:
+    external: true
+
+services:
+  mysql:
+    image: mysql:8.0.0
+    container_name: controle_usuarios
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./structDB:/docker-entrypoint-initdb.d
+      - ./logs:/var/log/mysql
+    environment:
+      MYSQL_DATABASE: odontoprint_db
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: odontoprint
+      MYSQL_PASSWORD: 123456
+      MYSQL_HOST: mysql
+      LANG: C.UTF-8
+    ports:
+      - 3306:3306
+    networks:
+      - dbnet
+      
+  odontoprint_bff:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: odontoprint_bff
+    env_file: .env
+    ports:
+      - 3002:8080
+    volumes:
+      - .:/odontoprint_bff
+    stdin_open: true
+    tty: true
+    networks:
+      - dbnet
