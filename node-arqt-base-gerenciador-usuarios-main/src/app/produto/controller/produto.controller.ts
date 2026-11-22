@@ -12,19 +12,19 @@ import { ProdutoCadastroDto } from '../dto/produtoCadastro.dto';
 export class ProdutoController {
   constructor(private produtoService: ProdutoService) { }
 
-  @Roles('admin')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Post()
   async cadastrarProduto(@CurrentUser() currentUser: CurrentUserDto, @Body() produtoCadastroDto: ProdutoCadastroDto) {
     return this.produtoService.cadastrarProduto(currentUser, produtoCadastroDto);
   }
 
-  @Roles('admin', 'comum')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Get('ativos')
   async buscarProdutosAtivos() {
     return this.produtoService.buscarProdutosAtivos();
   }
 
-  @Roles('admin')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Put(':produtoId')
   async editarProduto(
     @CurrentUser() currentUser: CurrentUserDto,
@@ -34,7 +34,7 @@ export class ProdutoController {
     return this.produtoService.editarProduto(currentUser, produtoId, produtoCadastroDto);
   }
 
-  @Roles('admin', 'comum')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Get(':produtoId')
   async buscarProdutoPorId(
     @Param('produtoId', new ParseIntPipe()) produtoId: number

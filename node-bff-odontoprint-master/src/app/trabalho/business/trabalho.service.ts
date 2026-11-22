@@ -572,12 +572,22 @@ export class TrabalhoService {
     const anteriorStatusConcluido = statusConcluidos.includes(trabalhoDB.status);
 
     if (novoStatusConcluido && !anteriorStatusConcluido) {
+      const agora = new Date();
       if (trabalhoDB.dataConclusao == null) {
         await this.atualizaEstoque(idTrabalho);
-        trabalho.dataConclusao = new Date();
+        trabalho.dataConclusao = agora;
+      }
+      if (trabalhoDB.dataHoraEnvio == null) {
+        trabalho.dataHoraEnvio = agora;
+      }
+    } else if (novoStatusConcluido && anteriorStatusConcluido) {
+      // Já era concluído/enviado, mas garante que dataHoraEnvio esteja preenchida caso não estivesse
+      if (trabalhoDB.dataHoraEnvio == null) {
+        trabalho.dataHoraEnvio = trabalhoDB.dataConclusao || new Date();
       }
     } else if (!novoStatusConcluido) {
       trabalho.dataConclusao = null;
+      trabalho.dataHoraEnvio = null;
     }
 
     const historicoNovo = await this.historicoStatusTrabalhoService.cadastrarHistoricoStatusTrabalho(currentUser, idTrabalho, trabalhoDB.status, trabalhoStatusEditarDto.status);
@@ -709,12 +719,16 @@ export class TrabalhoService {
     );
   }
 
-  async buscarTrabalhos(statusTrabalho: StatusTrabalho[], idEmpresa? :number) {
+  async buscarTrabalhos(statusTrabalho: StatusTrabalho[], idEmpresa?: number, incluirOcultos = false) {
     if (idEmpresa) {
-      return this.trabalhoRepository.buscarTrabalhosDaEmpresa(idEmpresa, statusTrabalho);
+      return this.trabalhoRepository.buscarTrabalhosDaEmpresa(idEmpresa, statusTrabalho, incluirOcultos);
     }
 
-    return this.trabalhoRepository.buscarTrabalhos(statusTrabalho);
+    return this.trabalhoRepository.buscarTrabalhos(statusTrabalho, incluirOcultos);
+  }
+
+  async pesquisarTrabalhos(termo: string, idEmpresa?: number) {
+    return this.trabalhoRepository.pesquisarTrabalhos(termo, idEmpresa);
   }
 
   async buscarTrabalhosPendentes(idEmpresa?:number) {
@@ -725,8 +739,18 @@ export class TrabalhoService {
     return this.trabalhoRepository.buscarTrabalhos([StatusTrabalho.PENDENTE]);
   }
 
-  async buscarTrabalhosConcluidos(idEmpresa:number, dataInicio: string, dataFim: string) {
-    return await this.trabalhoRepository.buscarTrabalhosConcluidos([StatusTrabalho.ENVIADO, StatusTrabalho.ENVIADO_PROVA ], idEmpresa, dataInicio, dataFim);
+  async buscarTrabalhosConcluidos(idEmpresa: number, dataInicio: string, dataFim: string, incluirOcultos = false) {
+    return await this.trabalhoRepository.buscarTrabalhosConcluidos([StatusTrabalho.ENVIADO, StatusTrabalho.ENVIADO_PROVA, StatusTrabalho.PAGAMENTO_RECEBIDO], idEmpresa, dataInicio, dataFim, incluirOcultos);
+  }
+
+  async alternarOcultarConcluido(idTrabalho: number, ocultar?: boolean) {
+    const trabalhoDB = await this.trabalhoRepository.buscarProdutoPorId(idTrabalho);
+    if (!trabalhoDB) {
+      throw new HttpException("Trabalho não encontrado", HttpStatus.NOT_FOUND);
+    }
+    const novoValor = ocultar !== undefined ? !!ocultar : !trabalhoDB.ocultoConcluido;
+    await this.trabalhoRepository.atualizaTrabalho(idTrabalho, { ocultoConcluido: novoValor } as any);
+    return { idTrabalho, ocultoConcluido: novoValor };
   }
 
   async buscarRelatorio(idEmpresa:number, statusTrabalho: StatusTrabalho[], dataInicio: string, dataFim: string) {

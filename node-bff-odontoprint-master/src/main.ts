@@ -1,4 +1,12 @@
+import './typeorm-patch';
 import 'dotenv/config';
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { statusMiddleware } from './server.middleware';

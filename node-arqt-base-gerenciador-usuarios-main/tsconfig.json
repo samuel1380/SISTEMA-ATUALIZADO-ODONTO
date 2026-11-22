@@ -8,6 +8,7 @@
     "experimentalDecorators": true,
     "moduleResolution": "node",
     "target": "es6",
+    "skipLibCheck": true,
     "sourceMap": true,
     "outDir": "./dist",
     "baseUrl": ".",

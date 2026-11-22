@@ -19,7 +19,6 @@
     "@aws-sdk/client-s3": "^3.3.0",
     "@aws-sdk/node-http-handler": "^3.3.0",
     "@aws-sdk/types": "^3.3.0",
-    "@hunter-solucoes/node-arqt-base-gerenciador-financeiro": "^1.0.7",
     "@nestjs/cli": "^7.5.4",
     "@nestjs/common": "^7.6.4",
     "@nestjs/core": "^7.6.4",

@@ -16,8 +16,10 @@ export class ComponenteService {
   async cadastrarComponente(currentUser: any, componenteDto: ComponenteDto): Promise<Componente> {
     const componente = this.componenteRepository.create({
       ...componenteDto,
+      preco: Number(componenteDto.preco),
+      idMarcaComponente: Number(componenteDto.idMarcaComponente),
       ativo: 1,
-      idUsuarioCadastro: currentUser.user.idUsuario,
+      idUsuarioCadastro: currentUser?.user?.idUsuario || 1,
     });
     return this.componenteRepository.save(componente);
   }
@@ -30,6 +32,8 @@ export class ComponenteService {
     const componente = await this.componenteRepository.preload({
       idComponente,
       ...componenteDto,
+      preco: componenteDto.preco !== undefined ? Number(componenteDto.preco) : undefined,
+      idMarcaComponente: componenteDto.idMarcaComponente !== undefined ? Number(componenteDto.idMarcaComponente) : undefined,
     });
 
     if (!componente) {
@@ -38,7 +42,11 @@ export class ComponenteService {
 
     const componenteAtualizado = await this.componenteRepository.save(componente);
 
-    this.eventEmitter.emit('preco.changed', currentUser);
+    try {
+      this.eventEmitter.emit('preco.changed', currentUser);
+    } catch (err: any) {
+      console.warn(`Erro ao emitir preco.changed: ${err?.message}`);
+    }
 
     return componenteAtualizado;
   }

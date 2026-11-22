@@ -7,6 +7,7 @@ export const databaseConfig: TypeOrmModuleOptions = {
   username: process.env.DATABASE_USERNAME,
   password: process.env.DATABASE_PASSWORD,
   database: process.env.DATABASE_NAME,
+  charset: 'utf8mb4',
   entities: [
     __dirname + '/../**/*.entity{.ts,.js}',
     './node_modules/@hunter-solucoes/**/*.entity{.ts,.js}',

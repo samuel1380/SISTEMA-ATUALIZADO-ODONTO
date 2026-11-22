@@ -19,18 +19,32 @@ export class CategoriaProdutoService {
   }
 
   async cadastrarCategoriaProduto(currentUser: CurrentUserDto, categoriaProduto: CategoriaProdutoCadastroDto) {
+    const nomeLimpo = (categoriaProduto.nome || '').trim();
+    if (!nomeLimpo) throw new BadRequest('Nome da categoria é obrigatório');
+
+    const isDesativado = categoriaProduto.ativo === false || categoriaProduto.ativo === 'false' || categoriaProduto.ativo === 0 || categoriaProduto.ativo === '0';
+    const ativo = !isDesativado;
+
+    // Evita duplicidade no banco
+    const existente = await this.categoriaProdutoRepository.buscarPorNome(nomeLimpo);
+    if (existente) {
+      if (!existente.ativo && ativo) {
+        await this.categoriaProdutoRepository.atualizarCategoriaProduto(existente.idCategoriaProduto, { ativo: true });
+      }
+      return { idCategoriaProduto: existente.idCategoriaProduto, nome: existente.nome };
+    }
 
     const novoProduto = await this.categoriaProdutoRepository.cadastrarCategoriaProduto({
-      nome: categoriaProduto.nome,
-      ativo: categoriaProduto.ativo,
-      idUsuarioCadastro: currentUser?.user?.idUsuario || 0
+      nome: nomeLimpo,
+      ativo,
+      idUsuarioCadastro: currentUser?.user?.idUsuario || 1
     });
 
     if (!novoProduto) throw new BadRequest('Cadastro inválido');
 
-    const { nome } = novoProduto;
+    const { idCategoriaProduto, nome } = novoProduto;
 
-    return { nome };
+    return { idCategoriaProduto, nome };
   }
 
   async editarCategoriaProduto(currentUser: CurrentUserDto, produtoId: number, categoriaProduto: CategoriaProdutoCadastroDto) {

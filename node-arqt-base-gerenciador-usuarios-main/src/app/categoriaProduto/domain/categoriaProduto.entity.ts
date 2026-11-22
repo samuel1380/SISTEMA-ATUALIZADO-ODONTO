@@ -33,6 +33,6 @@ export class CategoriaProduto {
   @DeleteDateColumn()
   dataExclusao?: Date;
 
-  @OneToMany(type => Produto, (produto) => produto.categoriaProduto, { eager: true })
+  @OneToMany(type => Produto, (produto) => produto.categoriaProduto)
   produto?: Produto[];
 }

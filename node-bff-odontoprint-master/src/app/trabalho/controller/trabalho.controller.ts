@@ -42,13 +42,22 @@ export class TrabalhoController {
 
   @Roles('admin', 'producao', 'vendas', 'financeiro')
   @Get('trabalho')
-  async buscarTrabalhos(@CurrentUser() currentUser: any, @Query("statusTrabalho") statusTrabalho: StatusTrabalho[]) {
+  async buscarTrabalhos(
+    @CurrentUser() currentUser: any,
+    @Query("statusTrabalho") statusTrabalho: StatusTrabalho[],
+    @Query("incluirOcultos") incluirOcultosQuery?: string,
+  ) {
+    const incluirOcultos = incluirOcultosQuery === 'true';
+    const statusArray: StatusTrabalho[] = Array.isArray(statusTrabalho)
+      ? statusTrabalho
+      : (statusTrabalho ? [statusTrabalho as unknown as StatusTrabalho] : []);
+
     const idEmpresa = currentUser.user.empresas && currentUser.user.empresas[0]?.idEmpresa;
 
     if (currentUser.user.tipoUsuario === "externo" && idEmpresa) {
-      return this.trabalhoService.buscarTrabalhos(statusTrabalho, idEmpresa);
+      return this.trabalhoService.buscarTrabalhos(statusArray, idEmpresa, incluirOcultos);
     } else if (currentUser.user.tipoUsuario === "interno") {
-      return this.trabalhoService.buscarTrabalhos(statusTrabalho);
+      return this.trabalhoService.buscarTrabalhos(statusArray, undefined, incluirOcultos);
     }
 
     return [];
@@ -68,24 +77,35 @@ export class TrabalhoController {
     return [];
   }
 
-  @Roles('admin')
+  @Roles('admin', 'producao', 'vendas', 'financeiro')
   @Get('trabalhoconcluidos')
   async buscarTrabalhosConcluidos(
     @CurrentUser() currentUser: any,
     @Headers('idEmpresa') idEmpresaHeaders: string,
     @Query("dataInicio") dataInicio: string,
     @Query("dataFim") dataFim: string,
+    @Query("incluirOcultos") incluirOcultosQuery?: string,
   ) {
+    const incluirOcultos = incluirOcultosQuery === 'true';
     const idEmpresa = currentUser.user.empresas && currentUser.user.empresas[0]?.idEmpresa;
 
     if (currentUser.user.tipoUsuario === "externo" && idEmpresa) {
-      return this.trabalhoService.buscarTrabalhosConcluidos(idEmpresa, dataInicio, dataFim);
+      return this.trabalhoService.buscarTrabalhosConcluidos(idEmpresa, dataInicio, dataFim, incluirOcultos);
     } else if (currentUser.user.tipoUsuario === "interno") {
       const idEmpresaInt = parseInt(idEmpresaHeaders);
-      return this.trabalhoService.buscarTrabalhosConcluidos(idEmpresaInt, dataInicio, dataFim);
+      return this.trabalhoService.buscarTrabalhosConcluidos(idEmpresaInt, dataInicio, dataFim, incluirOcultos);
     }
 
     return [];
+  }
+
+  @Roles('admin', 'producao', 'vendas', 'financeiro')
+  @Put('trabalho/:trabalhoId/ocultar-concluido')
+  async alternarOcultarConcluido(
+    @Param('trabalhoId', new ParseIntPipe()) trabalhoId: number,
+    @Body() body: { ocultar?: boolean }
+  ) {
+    return this.trabalhoService.alternarOcultarConcluido(trabalhoId, body?.ocultar);
   }
 
   @Roles('admin')
@@ -162,6 +182,17 @@ export class TrabalhoController {
     @Param('trabalhoId', new ParseIntPipe()) trabalhoId: number
   ) {
     return this.trabalhoService.enviarParaProducao(trabalhoId);
+  }
+
+  @Roles('admin', 'producao', 'vendas', 'financeiro')
+  @Get('trabalho-pesquisa')
+  async pesquisarTrabalhos(
+    @CurrentUser() currentUser: any,
+    @Query('termo') termo: string
+  ) {
+    const idEmpresa = currentUser.user.empresas && currentUser.user.empresas[0]?.idEmpresa;
+    const isExterno = currentUser.user.tipoUsuario === 'externo';
+    return this.trabalhoService.pesquisarTrabalhos(termo, isExterno ? idEmpresa : undefined);
   }
 
   @Roles('admin', 'producao', 'vendas', 'financeiro')

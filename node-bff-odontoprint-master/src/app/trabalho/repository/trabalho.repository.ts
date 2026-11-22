@@ -1,4 +1,4 @@
-import { Between, Connection, In, Repository } from "typeorm";
+import { Between, Connection, In, Repository, Raw } from "typeorm";
 import { StatusTrabalho, Trabalho } from "../domain/trabalho.entity";
 import { InjectRepository } from "@nestjs/typeorm";
 
@@ -9,13 +9,19 @@ export class TrabalhoRepository {
     private readonly trabalhoRepository: Repository<Trabalho>
   ) { }
   
-  async buscarTrabalhosDaEmpresa(idEmpresa: number, status: StatusTrabalho[]) {
+  async buscarTrabalhosDaEmpresa(idEmpresa: number, status: StatusTrabalho[], incluirOcultos = false) {
+    const where: any = {
+      idEmpresa,
+      ativo: true,
+      status: In(status)
+    };
+
+    if (!incluirOcultos) {
+      where.ocultoConcluido = Raw(alias => `(${alias} IS NULL OR ${alias} = 0)`);
+    }
+
     return this.trabalhoRepository.find({
-      where: {
-        idEmpresa,
-        ativo: true,
-        status: In(status)
-      },
+      where,
       order: {
         ordem: "ASC",
         idTrabalho: "ASC",
@@ -23,14 +29,58 @@ export class TrabalhoRepository {
     });
   }
 
-  async buscarTrabalhosConcluidos(status: StatusTrabalho[], idEmpresa?: number, dataInicio?: string, dataFim?: string) {
+  async pesquisarTrabalhos(termo: string, idEmpresa?: number) {
+    if (!termo || !termo.trim()) {
+      return [];
+    }
+
+    const tLimpo = termo.trim();
+    const termoLike = `%${tLimpo}%`;
+    const numeroLimpo = tLimpo.replace(/[^0-9]/g, '');
+    const isNumero = numeroLimpo.length > 0 && (tLimpo.startsWith('#') || /^\d+$/.test(tLimpo));
+    const idNumero = isNumero ? parseInt(numeroLimpo, 10) : null;
+
+    const qb = this.trabalhoRepository.createQueryBuilder('trabalho')
+      .leftJoinAndSelect('trabalho.paciente', 'paciente')
+      .leftJoinAndSelect('trabalho.empresa', 'empresa')
+      .leftJoinAndSelect('trabalho.dentista', 'dentista')
+      .where('trabalho.ativo = true');
+
+    if (idEmpresa) {
+      qb.andWhere('trabalho.idEmpresa = :idEmpresa', { idEmpresa });
+    }
+
+    if (idNumero) {
+      qb.andWhere(
+        '(trabalho.idTrabalho = :idNumero OR trabalho.nomePaciente LIKE :termoLike OR paciente.nome LIKE :termoLike OR trabalho.nomeEmpresa LIKE :termoLike OR empresa.nome LIKE :termoLike OR empresa.razaoSocial LIKE :termoLike OR dentista.nome LIKE :termoLike OR trabalho.descricaoTrabalho LIKE :termoLike)',
+        { idNumero, termoLike }
+      );
+    } else {
+      qb.andWhere(
+        '(trabalho.nomePaciente LIKE :termoLike OR paciente.nome LIKE :termoLike OR trabalho.nomeEmpresa LIKE :termoLike OR empresa.nome LIKE :termoLike OR empresa.razaoSocial LIKE :termoLike OR dentista.nome LIKE :termoLike OR trabalho.descricaoTrabalho LIKE :termoLike)',
+        { termoLike }
+      );
+    }
+
+    qb.orderBy('trabalho.idTrabalho', 'DESC').take(25);
+
+    return qb.getMany();
+  }
+
+  async buscarTrabalhosConcluidos(status: StatusTrabalho[], idEmpresa?: number, dataInicio?: string, dataFim?: string, incluirOcultos = false) {
+    const where: any = {
+      // idEmpresa,
+      ativo: true,
+      status: In(status),
+      // dataConclusao: Between(new Date(dataInicio), new Date(dataFim)),
+    };
+
+    if (!incluirOcultos) {
+      where.ocultoConcluido = Raw(alias => `(${alias} IS NULL OR ${alias} = 0)`);
+    }
+
     return this.trabalhoRepository.find({
-      where: {
-        // idEmpresa,
-        ativo: true,
-        status: In(status),
-        // dataConclusao: Between(new Date(dataInicio), new Date(dataFim)),
-      },
+      where,
       order: {
         ordem: "ASC",
         idTrabalho: "ASC",
@@ -105,12 +155,19 @@ export class TrabalhoRepository {
     return fim;
   }
 
-  async buscarTrabalhos(status: StatusTrabalho[]) {
+  async buscarTrabalhos(status: StatusTrabalho[], incluirOcultos = false) {
+    const statusArray = Array.isArray(status) ? status : [status];
+    const where: any = {
+      ativo: true,
+      status: In(statusArray)
+    };
+
+    if (!incluirOcultos) {
+      where.ocultoConcluido = Raw(alias => `(${alias} IS NULL OR ${alias} = 0)`);
+    }
+
     return this.trabalhoRepository.find({
-      where: {
-        ativo: true,
-        status: In(status)
-      },
+      where,
       order: {
         ordem: "ASC",
         idTrabalho: "ASC",

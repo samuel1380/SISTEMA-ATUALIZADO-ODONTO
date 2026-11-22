@@ -12,19 +12,19 @@ import { CategoriaProdutoCadastroDto } from '../dto/categoriaProdutoCadastro.dto
 export class CategoriaProdutoController {
   constructor(private categoriaProdutoService: CategoriaProdutoService) { }
 
-  @Roles('admin')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Post()
   async cadastrarCategoriaProduto(@CurrentUser() currentUser: CurrentUserDto, @Body() categoriaProdutoCadastroDto: CategoriaProdutoCadastroDto) {
     return this.categoriaProdutoService.cadastrarCategoriaProduto(currentUser, categoriaProdutoCadastroDto);
   }
 
-  @Roles('admin', 'comum')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Get('ativos')
   async buscarCategoriaProdutoAtivos() {
     return this.categoriaProdutoService.buscarCategoriaProdutosAtivos();
   }
 
-  @Roles('admin')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Put(':produtoId')
   async editarCategoriaProduto(
     @CurrentUser() currentUser: CurrentUserDto,
@@ -34,7 +34,7 @@ export class CategoriaProdutoController {
     return this.categoriaProdutoService.editarCategoriaProduto(currentUser, produtoId, categoriaProdutoCadastroDto);
   }
 
-  @Roles('admin', 'comum')
+  @Roles('admin', 'comum', 'producao', 'vendas', 'financeiro')
   @Get(':produtoId')
   async buscarCategoriaProdutoPorId(
     @Param('produtoId', new ParseIntPipe()) produtoId: number

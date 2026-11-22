@@ -33,9 +33,20 @@ export class AlmoxarifadoService {
   }
 
   async findOneByEmpresa(idEmpresa: number): Promise<Almoxarifado> {
-    const almoxarifado = await this.almoxarifadoRepository.findOne({ where: { idEmpresa } });
+    let almoxarifado = await this.almoxarifadoRepository.findOne({ where: { idEmpresa } });
     if (!almoxarifado) {
-      throw new NotFoundException(`Almoxarifado com ID Empresa "${idEmpresa}" não encontrado.`);
+      almoxarifado = await this.almoxarifadoRepository.findOne({ where: { idEmpresa: 1 } });
+    }
+    if (!almoxarifado) {
+      const primeiro = await this.almoxarifadoRepository.findOne({ where: {} });
+      if (primeiro) {
+        return primeiro;
+      }
+      almoxarifado = await this.create({
+        nome: `Almoxarifado Principal`,
+        descricao: `Almoxarifado padrão do sistema`,
+        idEmpresa: idEmpresa || 1,
+      });
     }
     return almoxarifado;
   }

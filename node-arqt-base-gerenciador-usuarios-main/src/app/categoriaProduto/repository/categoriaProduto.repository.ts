@@ -12,8 +12,17 @@ export class CategoriaProdutoRepository extends Repository<CategoriaProduto> {
     return this.find({
       where: {
         ativo: true
+      },
+      order: {
+        nome: 'ASC'
       }
     });
+  }
+
+  async buscarPorNome(nome: string) {
+    return this.createQueryBuilder('cat')
+      .where('LOWER(TRIM(cat.nome)) = LOWER(TRIM(:nome))', { nome })
+      .getOne();
   }
 
   async buscarCategoriaProdutoPorId(produtoId: number) {

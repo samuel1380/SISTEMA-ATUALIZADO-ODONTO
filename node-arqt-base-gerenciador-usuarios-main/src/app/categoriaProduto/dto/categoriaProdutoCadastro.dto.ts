@@ -1,10 +1,10 @@
-import { IsBoolean, IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 
 export class CategoriaProdutoCadastroDto {
   @IsString()
   nome: string;
 
-  @IsBoolean()
-  ativo: boolean;
-
+  @IsOptional()
+  ativo?: any;
 }
+

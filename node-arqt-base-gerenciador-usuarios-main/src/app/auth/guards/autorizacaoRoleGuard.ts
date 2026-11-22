@@ -14,7 +14,7 @@ export class AutorizacaoRoleGuard implements CanActivate {
     const { user } = context.switchToHttp().getRequest();
 
     return roles.some(role => {
-      return user.permissoes.includes(role)
+      return user?.permissoes && Array.isArray(user.permissoes) && user.permissoes.includes(role);
     });
   }
 }

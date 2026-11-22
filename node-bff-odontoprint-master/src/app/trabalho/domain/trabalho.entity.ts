@@ -93,6 +93,9 @@ export class Trabalho {
   @Column({ type: 'datetime', nullable: true })
   dataConclusao?: Date;
 
+  @Column({ type: 'datetime', nullable: true })
+  dataHoraEnvio?: Date;
+
   @Column({ type: 'int', nullable: true })
   idTabelaPrecoProduto?: number;
 
@@ -101,6 +104,9 @@ export class Trabalho {
 
   @Column({ type: "boolean", default: false, nullable: true })
   finalizado?: boolean;
+
+  @Column({ type: "boolean", default: false, nullable: true })
+  ocultoConcluido?: boolean;
 
   @Column({ type: 'int', nullable: false })
   idUsuarioCadastro: number;

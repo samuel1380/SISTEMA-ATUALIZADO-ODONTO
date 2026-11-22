@@ -9,12 +9,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
     const timestamp = new Date().toISOString();
 
-    const resposta = exception instanceof HttpException ? exception.getResponse() : exception.message;
+    const isHttp = exception instanceof HttpException || (exception && typeof exception.getStatus === 'function');
+    const resposta = isHttp ? exception.getResponse() : (exception?.message || 'Erro interno do servidor');
 
-    const status =
-      exception instanceof HttpException
-        ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+    const status = isHttp ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
     console.log(`[ERROR] [${timestamp}] ip=${request?.header['x-forwarded-for']} url=${request.url} status=${status} mensagem=${JSON.stringify(resposta)} stack=${exception.stack}`)
 
