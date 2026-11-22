@@ -24,29 +24,19 @@ import { Emprestimo, StatusEmprestimo, TipoEmprestimo } from '../domain/empresti
 import { EmprestimoMovimentacao } from '../domain/emprestimo-movimentacao.entity';
 import { Fornecedor } from '../domain/fornecedor.entity';
 import { ClassificacaoLancamentoService } from './classificacao-lancamento.service';
+import { extrairAnoMesDia, formatDataYYYYMMDD, parseDataParaDataLocal } from '../utils/data-financeiro.util';
 
 /**
  * String `YYYY-MM-DD` como data local (meia-noite no fuso do servidor).
  * Evita o deslocamento de um dia de `new Date('YYYY-MM-DD')` (interpretado como UTC).
  */
 function parseDataPagamentoParaDataLocal(dataPagamento: string): Date {
-  const s = String(dataPagamento).trim();
-  const isoDia = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (isoDia) {
-    const y = parseInt(isoDia[1], 10);
-    const m = parseInt(isoDia[2], 10) - 1;
-    const d = parseInt(isoDia[3], 10);
-    return new Date(y, m, d);
-  }
-  return new Date(s);
+  return parseDataParaDataLocal(dataPagamento);
 }
 
 /** Data civil local em `YYYY-MM-DD` (sem UTC). Evita erro de mês/dia de `toISOString()` em fusos ≠ UTC. */
-function formatDataLocalYYYYMMDD(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+function formatDataLocalYYYYMMDD(d: Date | string): string {
+  return formatDataYYYYMMDD(d);
 }
 
 interface ListarLancamentosParams {
@@ -57,6 +47,7 @@ interface ListarLancamentosParams {
   statusParcela?: StatusParcela;
   idCategoria?: number;
   idCategoriaPai?: number;
+  filtroData?: 'competencia' | 'vencimento';
 }
 
 export interface DreParams {
@@ -488,8 +479,13 @@ export class FinanceiroService {
         qb.andWhere('(lancamento.idCategoria = :idCategoriaPai OR categoriaPai.idCategoria = :idCategoriaPai)', { idCategoriaPai: params.idCategoriaPai });
       }
       if (params.mes != null && params.ano != null) {
-        qb.andWhere('EXTRACT(YEAR FROM parcela.dataVencimento) = :ano', { ano: params.ano });
-        qb.andWhere('EXTRACT(MONTH FROM parcela.dataVencimento) = :mes', { mes: params.mes });
+        if (params.filtroData === 'competencia') {
+          qb.andWhere('EXTRACT(YEAR FROM lancamento.dataCompetencia) = :ano', { ano: params.ano });
+          qb.andWhere('EXTRACT(MONTH FROM lancamento.dataCompetencia) = :mes', { mes: params.mes });
+        } else {
+          qb.andWhere('EXTRACT(YEAR FROM parcela.dataVencimento) = :ano', { ano: params.ano });
+          qb.andWhere('EXTRACT(MONTH FROM parcela.dataVencimento) = :mes', { mes: params.mes });
+        }
       }
       if (params.statusParcela != null) {
         qb.andWhere('parcela.status = :statusParcela', { statusParcela: params.statusParcela });
@@ -506,8 +502,13 @@ export class FinanceiroService {
           if (params.mes != null && params.ano != null) {
             const filtroAno = Number(params.ano);
             const filtroMes = Number(params.mes);
-            const d = new Date(p.dataVencimento);
-            if (d.getFullYear() !== filtroAno || d.getMonth() + 1 !== filtroMes) return false;
+            if (params.filtroData === 'competencia') {
+              const comp = extrairAnoMesDia(l.dataCompetencia);
+              if (!comp || comp.ano !== filtroAno || comp.mes !== filtroMes) return false;
+            } else {
+              const venc = extrairAnoMesDia(p.dataVencimento);
+              if (!venc || venc.ano !== filtroAno || venc.mes !== filtroMes) return false;
+            }
           }
           if (params.statusParcela != null && p.status !== params.statusParcela) return false;
           return true;
@@ -544,12 +545,19 @@ export class FinanceiroService {
     }
 
     if (params.mes && params.ano) {
-      where.parcelas = {
-        dataVencimento: Raw(alias => `EXTRACT(YEAR FROM ${alias}) = :ano AND EXTRACT(MONTH FROM ${alias}) = :mes`, {
+      if (params.filtroData === 'competencia') {
+        where.dataCompetencia = Raw(alias => `EXTRACT(YEAR FROM ${alias}) = :ano AND EXTRACT(MONTH FROM ${alias}) = :mes`, {
           ano: params.ano,
           mes: params.mes,
-        }),
-      };
+        });
+      } else {
+        where.parcelas = {
+          dataVencimento: Raw(alias => `EXTRACT(YEAR FROM ${alias}) = :ano AND EXTRACT(MONTH FROM ${alias}) = :mes`, {
+            ano: params.ano,
+            mes: params.mes,
+          }),
+        };
+      }
     }
 
     options.where = where;
@@ -570,10 +578,17 @@ export class FinanceiroService {
       if (params.mes != null && params.ano != null) {
         const filtroAno = Number(params.ano);
         const filtroMes = Number(params.mes);
-        parcelas = parcelas.filter((p) => {
-          const d = new Date(p.dataVencimento);
-          return d.getFullYear() === filtroAno && d.getMonth() + 1 === filtroMes;
-        });
+        if (params.filtroData === 'competencia') {
+          const comp = extrairAnoMesDia(l.dataCompetencia);
+          if (!comp || comp.ano !== filtroAno || comp.mes !== filtroMes) {
+            continue;
+          }
+        } else {
+          parcelas = parcelas.filter((p) => {
+            const venc = extrairAnoMesDia(p.dataVencimento);
+            return venc != null && venc.ano === filtroAno && venc.mes === filtroMes;
+          });
+        }
       }
       if (params.statusParcela != null) {
         parcelas = parcelas.filter((p) => p.status === params.statusParcela);
@@ -1951,20 +1966,21 @@ export class FinanceiroService {
     }
 
     if (regime === 'competencia') {
-      // Regra pedida: no regime de competência, somar o valor faturado (`fatura.valorTotal`) por mês (vigência sobrepõe o mês).
+      // No regime de competência, somar o valor faturado (`fatura.valorTotal`) pela competência real (dataInicio dentro do mês).
       for (const mesAno of meses) {
         const partes = mesAno.split('/');
         const mesCol = Number(partes[0]);
         const anoCol = Number(partes[1]);
-        const primeiroDiaMes = formatDataLocalYYYYMMDD(new Date(anoCol, mesCol - 1, 1));
-        const ultimoDiaMes = formatDataLocalYYYYMMDD(new Date(anoCol, mesCol, 0));
+        const ultimoDia = new Date(anoCol, mesCol, 0).getDate();
+        const primeiroDiaMes = `${anoCol}-${String(mesCol).padStart(2, '0')}-01`;
+        const ultimoDiaMes = `${anoCol}-${String(mesCol).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
 
         const qb = this.faturaRepository
           .createQueryBuilder('fatura')
           .select('COALESCE(SUM(fatura.valorTotal), 0)', 'total')
           .where('fatura.status != :fatCancel', { fatCancel: StatusFatura.CANCELADA })
-          .andWhere('fatura.dataInicio <= :ultimoDiaMes', { ultimoDiaMes })
-          .andWhere('fatura.dataFim >= :primeiroDiaMes', { primeiroDiaMes });
+          .andWhere('fatura.dataInicio >= :primeiroDiaMes', { primeiroDiaMes })
+          .andWhere('fatura.dataInicio <= :ultimoDiaMes', { ultimoDiaMes });
 
         if (idEmpresa != null) {
           qb.andWhere('fatura.idEmpresa = :idEmpresa', { idEmpresa });
@@ -1979,8 +1995,9 @@ export class FinanceiroService {
         const partes = mesAno.split('/');
         const mesCol = Number(partes[0]);
         const anoCol = Number(partes[1]);
-        const primeiroDiaMes = formatDataLocalYYYYMMDD(new Date(anoCol, mesCol - 1, 1));
-        const ultimoDiaMes = formatDataLocalYYYYMMDD(new Date(anoCol, mesCol, 0));
+        const ultimoDia = new Date(anoCol, mesCol, 0).getDate();
+        const primeiroDiaMes = `${anoCol}-${String(mesCol).padStart(2, '0')}-01`;
+        const ultimoDiaMes = `${anoCol}-${String(mesCol).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
 
         const qb = this.parcelaRepository
           .createQueryBuilder('parcela')

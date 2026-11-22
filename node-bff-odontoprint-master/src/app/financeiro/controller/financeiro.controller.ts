@@ -75,6 +75,11 @@ class ListarLancamentosQueryDto {
   @IsOptional()
   @IsIn(['true', '1'])
   incluirTotais?: 'true' | '1';
+
+  /** Filtro por data de competência ou por data de vencimento da parcela. */
+  @IsOptional()
+  @IsIn(['competencia', 'vencimento'])
+  filtroData?: 'competencia' | 'vencimento';
 }
 
 class DreQueryDto {

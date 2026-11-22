@@ -32,6 +32,14 @@ export class FaturaRecorrenteService {
       this.logger.log(
         `JOB concluído: ${resultado.adicionados} trabalhos adicionados a ${resultado.faturasAtualizadas} faturas.`
       );
+
+      // Garante que faturas e OSs permaneçam organizadas no mês correto de competência
+      const resultadoOrg = await this.faturaService.organizarFaturasNoMesCorreto();
+      if (resultadoOrg.ordensMovidas > 0) {
+        this.logger.log(
+          `JOB organização de faturas: ${resultadoOrg.ordensMovidas} OS(s) reorganizada(s) para o mês correto.`
+        );
+      }
     } catch (error) {
       this.logger.error(`Erro ao executar JOB de adicionar trabalhos enviados às faturas: ${error.message}`, error.stack);
     }

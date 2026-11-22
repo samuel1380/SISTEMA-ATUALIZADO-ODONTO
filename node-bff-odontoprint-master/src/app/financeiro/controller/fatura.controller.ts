@@ -97,6 +97,14 @@ export class FaturaController {
         return this.faturaService.recalcularFatura(id);
     }
 
+    @Roles('admin', 'financeiro')
+    @Post('organizar-mes-correto')
+    organizarFaturasNoMesCorreto(
+        @Query('idEmpresa', new OptionalParseIntPipe()) idEmpresa?: number,
+    ) {
+        return this.faturaService.organizarFaturasNoMesCorreto(idEmpresa);
+    }
+
     @Roles('admin')
     @Post('recalcular-todas')
     recalcularFaturasEmAberto() {

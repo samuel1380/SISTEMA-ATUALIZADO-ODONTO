@@ -23,6 +23,12 @@ import { TrabalhoService } from '@src/app/trabalho/business/trabalho.service';
 import { DevolucaoComponente, StatusDevolucao } from '../domain/devolucao-componente.entity';
 import { FaturaDevolucaoItem } from '../domain/fatura-devolucao-item.entity';
 import { Componente } from '@src/app/componente/domain/componente.entity';
+import { extrairAnoMesDia, formatDataYYYYMMDD, parseDataParaDataLocal } from '../utils/data-financeiro.util';
+
+/** Formata data em YYYY-MM-DD sem deslocamento por fuso horário. */
+function formatDataLocalYYYYMMDD(d: Date | string | null | undefined): string {
+  return formatDataYYYYMMDD(d);
+}
 
 @Injectable()
 export class FaturaService {
@@ -560,18 +566,13 @@ export class FaturaService {
     }
     if (fatura.status !== StatusFatura.ABERTA) throw new BadRequestException(`Apenas faturas com status 'ABERTA' podem ser fechadas. Status atual: ${fatura.status}`);
 
-    // Tratamento seguro de datas para evitar deslocamento de dia/mês por fuso horário em strings 'YYYY-MM-DD' (UTC).
-    const rawDataFim = String(fatura.dataFim).split('T')[0];
-    const dataCompetenciaString = /^\d{4}-\d{2}-\d{2}$/.test(rawDataFim)
-      ? rawDataFim
-      : (() => {
-          const d = new Date(fatura.dataFim);
-          return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-        })();
+    // Tratamento seguro de datas para evitar deslocamento de dia/mês por fuso horário.
+    // A competência financeira do lançamento deve corresponder exatamente ao início da vigência da fatura.
+    const dataCompetenciaString =
+      formatDataLocalYYYYMMDD(fatura.dataInicio) || formatDataLocalYYYYMMDD(fatura.dataFim);
 
     // Formata a data de vencimento para o formato YYYY-MM-DD.
-    const dataVencimentoDate = new Date(fatura.dataVencimento);
-    const dataVencimentoString = `${dataVencimentoDate.getUTCFullYear()}-${String(dataVencimentoDate.getUTCMonth() + 1).padStart(2, '0')}-${String(dataVencimentoDate.getUTCDate()).padStart(2, '0')}`;
+    const dataVencimentoString = formatDataLocalYYYYMMDD(fatura.dataVencimento);
 
     // 1. Gerar o Lançamento Financeiro
     const lancamento = await this.financeiroService.criarLancamento({
@@ -1613,105 +1614,20 @@ export class FaturaService {
 
       // Processa cada trabalho individualmente
       for (const trabalho of trabalhosComDataConclusao) {
-        if (!trabalho.dataConclusao) {
-          continue;
-        }
+        const dataRef = trabalho.dataConclusao || trabalho.dataHoraEnvio || (trabalho as any).dataInclusao;
+        const info = extrairAnoMesDia(dataRef);
+        if (!info) continue;
 
-        const dataConclusao = new Date(trabalho.dataConclusao);
-        const dataConclusaoNormalizada = new Date(dataConclusao.getFullYear(), dataConclusao.getMonth(), dataConclusao.getDate());
+        const ano = info.ano;
+        const mes = info.mes; // 1-12
 
-        // Busca faturas onde a dataConclusao está dentro do período (dataInicio <= dataConclusao <= dataFim)
-        const queryBuilder = faturaRepo.createQueryBuilder('fatura');
-        queryBuilder.where('fatura.idEmpresa = :idEmpresa', { idEmpresa: trabalho.idEmpresa });
-        queryBuilder.andWhere('fatura.dataInicio <= :dataConclusao', { dataConclusao: dataConclusaoNormalizada });
-        queryBuilder.andWhere('fatura.dataFim >= :dataConclusao', { dataConclusao: dataConclusaoNormalizada });
-        queryBuilder.orderBy('fatura.dataFim', 'DESC'); // Prioriza faturas mais recentes
-
-        const faturasEncontradas = await queryBuilder.getMany();
-
-        let fatura: Fatura | null = null;
-
-        // Se encontrou faturas, verifica o status
-        if (faturasEncontradas.length > 0) {
-          // Prioriza faturas ABERTA ou AGUARDANDO_DEVOLUCAO
-          const faturaAberta = faturasEncontradas.find(f => 
-            f.status === StatusFatura.ABERTA || f.status === StatusFatura.AGUARDANDO_DEVOLUCAO
-          );
-
-          if (faturaAberta) {
-            fatura = faturaAberta;
-          } else {
-            // Se todas as faturas do período estão FECHADAS ou PAGAS, cria uma fatura complementar NO MESMO MÊS
-            // para manter a competência financeira correta e não empurrar receitas para os meses seguintes
-            const ano = dataConclusao.getFullYear();
-            const mes = dataConclusao.getMonth(); // 0-11
-            const ultimoDiaMes = new Date(ano, mes + 1, 0);
-            const dataVencimento = new Date(ano, mes + 1, 20);
-
-            const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-            const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-            const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-            const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-
-            fatura = faturaRepo.create({
-              idEmpresa: trabalho.idEmpresa,
-              dataInicio: dataInicioNormalizada,
-              dataFim: dataFimNormalizada,
-              dataVencimento: dataVencimento,
-              valorTotalBruto: 0,
-              desconto: 0,
-              valorTotal: 0,
-              status: StatusFatura.ABERTA,
-              descricao: 'Fatura Complementar',
-            });
-            fatura = await faturaRepo.save(fatura);
-            this.logger.log(
-              `Fatura complementar criada para empresa ${trabalho.idEmpresa} no mês ${mes + 1}/${ano} (ID: ${fatura.idFatura})`
-            );
-          }
-        } else {
-          // Não encontrou nenhuma fatura que contenha a dataConclusao
-          // Cria uma nova fatura para o mês de conclusão
-          const ano = dataConclusao.getFullYear();
-          const mes = dataConclusao.getMonth(); // 0-11
-          const primeiroDiaMes = new Date(ano, mes, 1);
-          const ultimoDiaMes = new Date(ano, mes + 1, 0);
-          const dataVencimento = new Date(ano, mes + 1, 20);
-
-          const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-          const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-          
-          const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-          const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-
-          // Verifica novamente com lock para evitar condições de corrida
-          fatura = await faturaRepo.findOne({
-            where: {
-              idEmpresa: trabalho.idEmpresa,
-              dataInicio: dataInicioNormalizada,
-              dataFim: dataFimNormalizada,
-            },
-            lock: { mode: 'pessimistic_write' },
-          });
-
-          if (!fatura) {
-            fatura = faturaRepo.create({
-              idEmpresa: trabalho.idEmpresa,
-              dataInicio: dataInicioNormalizada,
-              dataFim: dataFimNormalizada,
-              dataVencimento: dataVencimento,
-              valorTotalBruto: 0,
-              desconto: 0,
-              valorTotal: 0,
-              status: StatusFatura.ABERTA,
-            });
-
-            fatura = await faturaRepo.save(fatura);
-            this.logger.log(
-              `Nova fatura criada para empresa ${trabalho.idEmpresa} - mês ${mes + 1}/${ano} (ID: ${fatura.idFatura})`
-            );
-          }
-        }
+        // Obtém ou cria a fatura para o mês exato de conclusão do trabalho
+        const fatura = await this.obterOuCriarFaturaParaMesAno(
+          manager,
+          trabalho.idEmpresa,
+          ano,
+          mes,
+        );
 
         // Agrupa trabalhos por fatura para processar em lote
         if (fatura) {
@@ -1852,108 +1768,24 @@ export class FaturaService {
         return null;
       }
 
-      // Verifica se o trabalho tem dataConclusao
-      if (!trabalho.dataConclusao) {
-        this.logger.log(`Trabalho ${idTrabalho} não possui dataConclusao. Não é possível determinar a fatura correta.`);
+      // Determina a data de referência do trabalho/OS
+      const dataRef = trabalho.dataConclusao || trabalho.dataHoraEnvio || ordemServico.dataConcluido;
+      const info = extrairAnoMesDia(dataRef);
+      if (!info) {
+        this.logger.warn(`Trabalho ${idTrabalho} não possui data válida. Não é possível determinar a fatura correta.`);
         return null;
       }
 
-      // Determina a data de conclusão do trabalho
-      const dataConclusao = new Date(trabalho.dataConclusao);
-      const dataConclusaoNormalizada = new Date(dataConclusao.getFullYear(), dataConclusao.getMonth(), dataConclusao.getDate());
+      const ano = info.ano;
+      const mes = info.mes; // 1-12
 
-      // Busca faturas onde a dataConclusao está dentro do período (dataInicio <= dataConclusao <= dataFim)
-      const queryBuilder = faturaRepo.createQueryBuilder('fatura');
-      queryBuilder.where('fatura.idEmpresa = :idEmpresa', { idEmpresa: trabalho.idEmpresa });
-      queryBuilder.andWhere('fatura.dataInicio <= :dataConclusao', { dataConclusao: dataConclusaoNormalizada });
-      queryBuilder.andWhere('fatura.dataFim >= :dataConclusao', { dataConclusao: dataConclusaoNormalizada });
-      queryBuilder.orderBy('fatura.dataFim', 'DESC'); // Prioriza faturas mais recentes
-
-      const faturasEncontradas = await queryBuilder.getMany();
-
-      let fatura: Fatura | null = null;
-
-      // Se encontrou faturas, verifica o status
-      if (faturasEncontradas.length > 0) {
-        // Prioriza faturas ABERTA ou AGUARDANDO_DEVOLUCAO
-        const faturaAberta = faturasEncontradas.find(f => 
-          f.status === StatusFatura.ABERTA || f.status === StatusFatura.AGUARDANDO_DEVOLUCAO
-        );
-
-        if (faturaAberta) {
-          fatura = faturaAberta;
-        } else {
-          // Se todas as faturas do período estão FECHADAS ou PAGAS, cria uma fatura complementar NO MESMO MÊS
-          // para manter a competência financeira correta e não empurrar receitas para os meses seguintes
-          const ano = dataConclusao.getFullYear();
-          const mes = dataConclusao.getMonth(); // 0-11
-          const ultimoDiaMes = new Date(ano, mes + 1, 0);
-          const dataVencimento = new Date(ano, mes + 1, 20);
-
-          const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-          const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-          const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-          const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-
-          fatura = faturaRepo.create({
-            idEmpresa: trabalho.idEmpresa,
-            dataInicio: dataInicioNormalizada,
-            dataFim: dataFimNormalizada,
-            dataVencimento: dataVencimento,
-            valorTotalBruto: 0,
-            desconto: 0,
-            valorTotal: 0,
-            status: StatusFatura.ABERTA,
-            descricao: 'Fatura Complementar',
-          });
-          fatura = await faturaRepo.save(fatura);
-          this.logger.log(
-            `Fatura complementar criada para empresa ${trabalho.idEmpresa} no mês ${mes + 1}/${ano} (ID: ${fatura.idFatura})`
-          );
-        }
-      } else {
-        // Não encontrou nenhuma fatura que contenha a dataConclusao
-        // Cria uma nova fatura para o mês de conclusão
-        const ano = dataConclusao.getFullYear();
-        const mes = dataConclusao.getMonth(); // 0-11
-        const primeiroDiaMes = new Date(ano, mes, 1);
-        const ultimoDiaMes = new Date(ano, mes + 1, 0);
-        const dataVencimento = new Date(ano, mes + 1, 20);
-
-        const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-        const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-        
-        const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-        const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-
-        // Verifica novamente com lock para evitar condições de corrida
-        fatura = await faturaRepo.findOne({
-          where: {
-            idEmpresa: trabalho.idEmpresa,
-            dataInicio: dataInicioNormalizada,
-            dataFim: dataFimNormalizada,
-          },
-          lock: { mode: 'pessimistic_write' },
-        });
-
-        if (!fatura) {
-          fatura = faturaRepo.create({
-            idEmpresa: trabalho.idEmpresa,
-            dataInicio: dataInicioNormalizada,
-            dataFim: dataFimNormalizada,
-            dataVencimento: dataVencimento,
-            valorTotalBruto: 0,
-            desconto: 0,
-            valorTotal: 0,
-            status: StatusFatura.ABERTA,
-          });
-
-          fatura = await faturaRepo.save(fatura);
-          this.logger.log(
-            `Nova fatura criada para empresa ${trabalho.idEmpresa} - mês ${mes + 1}/${ano} (ID: ${fatura.idFatura})`
-          );
-        }
-      }
+      // Obtém ou cria a fatura para o mês exato de conclusão do trabalho
+      const fatura = await this.obterOuCriarFaturaParaMesAno(
+        manager,
+        trabalho.idEmpresa,
+        ano,
+        mes,
+      );
 
       // Adiciona a OS à fatura (aplica desconto após somar)
       const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) + Number(ordemServico.valorTotal);
@@ -2040,7 +1872,11 @@ export class FaturaService {
         : [{ valor: valor, dataVencimento: dto.dataPagamento! }];
 
       const totalParcelas = parcelasDto.length;
-      const dataCompetenciaString = parcelasDto[0].dataVencimento.split('T')[0];
+      // A competência deve refletir a competência real da fatura (início da vigência), e não a data de vencimento da parcela
+      const dataCompetenciaString =
+        formatDataLocalYYYYMMDD(fatura.dataInicio) ||
+        formatDataLocalYYYYMMDD(fatura.dataFim) ||
+        parcelasDto[0].dataVencimento.split('T')[0];
 
       const lancamento = lancamentoRepo.create({
         descricao: `Pagamento da Fatura #${idFatura}${dto.meioPagamento ? ` - ${dto.meioPagamento}` : ''}${totalParcelas > 1 ? ` (${totalParcelas} parcelas)` : ''}`,
@@ -2667,6 +2503,192 @@ export class FaturaService {
       where: { idEmpresa },
       relations: ['empresa', 'ordensDeServico'],
       order: { dataInicio: 'DESC', idFatura: 'DESC' },
+    });
+  }
+
+  /**
+   * Obtém fatura aberta existente para o mês/ano ou cria uma nova fatura (ou complementar) no mesmo mês.
+   * Garante que os trabalhos permaneçam na competência real da conclusão.
+   */
+  async obterOuCriarFaturaParaMesAno(
+    manager: EntityManager,
+    idEmpresa: number,
+    ano: number,
+    mes: number, // 1 a 12
+  ): Promise<Fatura> {
+    const faturaRepo = manager.getRepository(Fatura);
+
+    const ultimoDia = new Date(ano, mes, 0).getDate();
+    const dataInicioStr = `${ano}-${String(mes).padStart(2, '0')}-01`;
+    const dataFimStr = `${ano}-${String(mes).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
+    const dataInicioNormalizada = parseDataParaDataLocal(dataInicioStr);
+    const dataFimNormalizada = parseDataParaDataLocal(dataFimStr);
+    const dataVencimento = new Date(ano, mes, 20); // Vencimento padrão: dia 20 do mês seguinte
+
+    // Busca faturas existentes para esta empresa cuja competência comece no mês informado
+    const qb = faturaRepo.createQueryBuilder('fatura')
+      .where('fatura.idEmpresa = :idEmpresa', { idEmpresa })
+      .andWhere('fatura.status != :cancelada', { cancelada: StatusFatura.CANCELADA })
+      .andWhere('fatura.dataInicio >= :dataInicio', { dataInicio: dataInicioStr })
+      .andWhere('fatura.dataInicio <= :dataFim', { dataFim: dataFimStr })
+      .orderBy('fatura.idFatura', 'DESC');
+
+    const faturas = await qb.getMany();
+
+    const faturaAberta = faturas.find(
+      (f) => f.status === StatusFatura.ABERTA || f.status === StatusFatura.AGUARDANDO_DEVOLUCAO,
+    );
+
+    if (faturaAberta) {
+      return faturaAberta;
+    }
+
+    const novaFatura = faturaRepo.create({
+      idEmpresa,
+      dataInicio: dataInicioNormalizada,
+      dataFim: dataFimNormalizada,
+      dataVencimento,
+      valorTotalBruto: 0,
+      desconto: 0,
+      valorTotal: 0,
+      status: StatusFatura.ABERTA,
+      descricao: faturas.length > 0 ? 'Fatura Complementar' : undefined,
+    });
+
+    return faturaRepo.save(novaFatura);
+  }
+
+  /**
+   * Reorganiza Ordens de Serviço / Trabalhos nas faturas correspondentes ao mês real de conclusão.
+   * Corrige situações onde trabalhos de um mês foram jogados para faturas de meses futuros (ex: nov -> dez).
+   */
+  async organizarFaturasNoMesCorreto(idEmpresa?: number): Promise<{
+    faturasAjustadas: number;
+    ordensMovidas: number;
+    faturasVaziasRemovidas: number;
+    detalhes: string[];
+  }> {
+    return this.dataSource.transaction(async (manager) => {
+      const faturaRepo = manager.getRepository(Fatura);
+      const osRepo = manager.getRepository(OrdemServico);
+      const lancamentoRepo = manager.getRepository(Lancamento);
+
+      const detalhes: string[] = [];
+      let ordensMovidas = 0;
+      const faturasParaRecalcular = new Set<number>();
+      const faturasVaziasCandidatas = new Set<number>();
+
+      // 1. Busca todas as faturas não canceladas
+      const qb = faturaRepo.createQueryBuilder('fatura')
+        .leftJoinAndSelect('fatura.ordensDeServico', 'os')
+        .leftJoinAndSelect('os.trabalho', 'trabalho')
+        .where('fatura.status != :statusCancelada', { statusCancelada: StatusFatura.CANCELADA });
+
+      if (idEmpresa) {
+        qb.andWhere('fatura.idEmpresa = :idEmpresa', { idEmpresa });
+      }
+
+      const faturas = await qb.getMany();
+
+      for (const fatura of faturas) {
+        const fatInfo = extrairAnoMesDia(fatura.dataInicio);
+        if (!fatInfo) continue;
+
+        const fatAno = fatInfo.ano;
+        const fatMes = fatInfo.mes;
+
+        for (const os of fatura.ordensDeServico || []) {
+          const dataRef =
+            os.dataConcluido ||
+            os.trabalho?.dataConclusao ||
+            os.trabalho?.dataHoraEnvio ||
+            (os as any).dataInclusao;
+          if (!dataRef) continue;
+
+          const osInfo = extrairAnoMesDia(dataRef);
+          if (!osInfo) continue;
+
+          const osAno = osInfo.ano;
+          const osMes = osInfo.mes;
+
+          // Se a data real de conclusão pertence a outro mês/ano em relação à fatura
+          if (osAno !== fatAno || osMes !== fatMes) {
+            const faturaCorreta = await this.obterOuCriarFaturaParaMesAno(
+              manager,
+              fatura.idEmpresa,
+              osAno,
+              osMes,
+            );
+
+            if (faturaCorreta.idFatura !== fatura.idFatura) {
+              await osRepo.update(os.idOrdemServico, { fatura: faturaCorreta });
+              ordensMovidas++;
+              faturasParaRecalcular.add(fatura.idFatura);
+              faturasParaRecalcular.add(faturaCorreta.idFatura);
+              faturasVaziasCandidatas.add(fatura.idFatura);
+
+              detalhes.push(
+                `OS #${os.idOrdemServico} (Trabalho #${os.idTrabalho}, concluído em ${osInfo.ymd}) movida da Fatura #${fatura.idFatura} (${fatMes}/${fatAno}) para Fatura #${faturaCorreta.idFatura} (${osMes}/${osAno}).`,
+              );
+            }
+          }
+        }
+      }
+
+      // 2. Recalcula todas as faturas afetadas
+      for (const idFat of faturasParaRecalcular) {
+        await this.recalcularFaturaComManager(manager, idFat);
+      }
+
+      // 3. Remove faturas que ficaram vazias (0 OSs), se abertas e com valor total 0
+      let faturasVaziasRemovidas = 0;
+      for (const idFat of faturasVaziasCandidatas) {
+        const fatCheck = await faturaRepo.findOne({
+          where: { idFatura: idFat },
+          relations: ['ordensDeServico'],
+        });
+        if (
+          fatCheck &&
+          fatCheck.status === StatusFatura.ABERTA &&
+          (!fatCheck.ordensDeServico || fatCheck.ordensDeServico.length === 0) &&
+          Number(fatCheck.valorTotal || 0) === 0
+        ) {
+          await lancamentoRepo.delete({ idFatura: idFat });
+          await faturaRepo.delete(idFat);
+          faturasVaziasRemovidas++;
+          detalhes.push(`Fatura vazia #${idFat} foi removida.`);
+        }
+      }
+
+      // 4. Sincroniza lançamentos vinculados a faturas com a data de competência correta (dataInicio da fatura)
+      const lancamentosFatura = await lancamentoRepo.find({
+        where: { idFatura: Not(IsNull()) },
+      });
+      for (const lanc of lancamentosFatura) {
+        const faturaAtual = await faturaRepo.findOneBy({ idFatura: lanc.idFatura });
+        if (faturaAtual) {
+          const compInfo = extrairAnoMesDia(faturaAtual.dataInicio);
+          const lancInfo = extrairAnoMesDia(lanc.dataCompetencia);
+          if (compInfo && (!lancInfo || compInfo.ymd !== lancInfo.ymd)) {
+            lanc.dataCompetencia = parseDataParaDataLocal(compInfo.ymd);
+            await lancamentoRepo.save(lanc);
+            detalhes.push(
+              `Competência do Lançamento #${lanc.idLancamento} (Fatura #${faturaAtual.idFatura}) sincronizada para ${compInfo.ymd}.`,
+            );
+          }
+        }
+      }
+
+      this.logger.log(
+        `Organização concluída: ${ordensMovidas} OS movidas, ${faturasParaRecalcular.size} faturas ajustadas, ${faturasVaziasRemovidas} vazias removidas.`,
+      );
+
+      return {
+        faturasAjustadas: faturasParaRecalcular.size,
+        ordensMovidas,
+        faturasVaziasRemovidas,
+        detalhes,
+      };
     });
   }
 }
