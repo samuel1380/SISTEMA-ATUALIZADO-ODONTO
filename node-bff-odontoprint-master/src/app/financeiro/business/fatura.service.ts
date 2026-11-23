@@ -699,7 +699,7 @@ export class FaturaService {
     if (!fatura) {
       throw new NotFoundException(`Fatura com ID ${idFatura} não encontrada.`);
     }
-    if (fatura.status === StatusFatura.PAGA) {
+    if (fatura.status === StatusFatura.PAGA || fatura.status === StatusFatura.FECHADA) {
       return fatura;
     }
 
@@ -2692,12 +2692,14 @@ export class FaturaService {
         }
       }
 
-      // 4. MOVIMENTAÇÃO DE OSs PARA O MÊS REAL DE CONCLUSÃO
+      // 4. MOVIMENTAÇÃO DE OSs PARA O MÊS REAL DE CONCLUSÃO (apenas faturas abertas; faturas pagas/fechadas são intocáveis)
       const faturasRestantes = await faturaRepo
         .createQueryBuilder('fatura')
         .leftJoinAndSelect('fatura.ordensDeServico', 'os')
         .leftJoinAndSelect('os.trabalho', 'trabalho')
-        .where('fatura.status != :statusCancelada', { statusCancelada: StatusFatura.CANCELADA })
+        .where('fatura.status IN (:...statusAbertos)', {
+          statusAbertos: [StatusFatura.ABERTA, StatusFatura.AGUARDANDO_DEVOLUCAO],
+        })
         .getMany();
 
       for (const fatura of faturasRestantes) {
