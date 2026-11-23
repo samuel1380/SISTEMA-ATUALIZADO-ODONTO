@@ -21,3 +21,4 @@ SELECT
 WHERE NOT EXISTS (
   SELECT 1 FROM `TbComponente` WHERE `nome` LIKE '%101.099%'
 );
+

@@ -7,6 +7,7 @@ import { UpdateUsuarioDto } from '../dto/update-usuario.dto';
 import { AdicionarPermissaoDto } from '../dto/adicionar-permissao.dto';
 import { OptionalParseIntPipe } from '../../financeiro/dto/optional-parse-int';
 import { ChangePasswordDto } from '../dto/change-password.dto';
+import { ResetarSenhaDto } from '../dto/resetar-senha.dto';
 
 @ApiTags('Usuário')
 @Controller('usuario')
@@ -94,8 +95,9 @@ export class UsuarioController {
   @Post(':id/reset-password')
   async resetarSenha(
     @Param('id', ParseIntPipe) id: number,
+    @Body() dto?: ResetarSenhaDto,
   ) {
-    return this.usuarioService.resetarSenha(id);
+    return this.usuarioService.resetarSenha(id, dto?.novaSenha);
   }
 
   @Post('change-password')

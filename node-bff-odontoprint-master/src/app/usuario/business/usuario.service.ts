@@ -52,6 +52,12 @@ export class UsuarioService {
     try {
       const resultado = await this.baseUsuarioService.cadastrarUsuario(usuarioCadastroDto);
       
+      // Se foi especificada uma senha inicial
+      if (dto.senha && dto.senha.trim().length > 0) {
+        const senhaCriptografada = this.criptografarNovaSenha(dto.senha.trim());
+        await this.usuarioRepository.update(resultado.idUsuario, { senha: senhaCriptografada });
+      }
+
       // Se foi especificada uma empresa, adiciona o usuário a ela
       if (dto.idEmpresa) {
         await this.baseUsuarioService.adicionarUsuarioNaEmpresa(resultado.idUsuario, dto.idEmpresa);
@@ -149,14 +155,16 @@ export class UsuarioService {
     return retVal.split('').sort(() => 0.5 - Math.random()).join('');
   }
 
-  async resetarSenha(idUsuario: number): Promise<{ senhaGerada: string }> {
+  async resetarSenha(idUsuario: number, novaSenhaCustom?: string): Promise<{ senhaGerada: string }> {
     const usuario = await this.buscarUsuarioPorId(idUsuario);
-    const novaSenha = this.gerarSenhaAleatoria();
+    const novaSenha = (novaSenhaCustom && novaSenhaCustom.trim().length > 0)
+      ? novaSenhaCustom.trim()
+      : this.gerarSenhaAleatoria();
     const senhaCriptografada = this.criptografarNovaSenha(novaSenha);
 
     await this.usuarioRepository.update(idUsuario, { senha: senhaCriptografada });
     
-    this.logger.log(`Senha do usuário ${idUsuario} resetada`);
+    this.logger.log(`Senha do usuário ${idUsuario} resetada/atualizada`);
     return { senhaGerada: novaSenha };
   }
 

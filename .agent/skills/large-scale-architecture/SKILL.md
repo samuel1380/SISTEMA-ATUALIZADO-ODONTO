@@ -30,3 +30,4 @@ This skill provides expert guidelines for navigating, refactoring, and scaling l
    - Separate feature modules, shared UI components, and singleton core services.
    - Enforce immutable state transitions and clean destruction of RxJS subscriptions via `takeUntil(this.destroy$)`.
    - Never tie visual rendering directly to external network calls without local caching or fallback placeholders.
+

@@ -26,3 +26,4 @@ This skill establishes verification standards to ensure that every bug fix, refa
 
 4. **Dry-Run & Verification Queries:**
    - After applying changes to a database or backend, run immediate verification queries to validate data integrity (e.g., checking totals, unassigned records, and status distributions).
+

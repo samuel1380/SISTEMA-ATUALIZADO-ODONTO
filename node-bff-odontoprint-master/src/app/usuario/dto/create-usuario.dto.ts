@@ -28,4 +28,8 @@ export class CreateUsuarioDto {
   @IsNumber()
   @IsOptional()
   idEmpresa?: number;
+
+  @IsString()
+  @IsOptional()
+  senha?: string;
 }

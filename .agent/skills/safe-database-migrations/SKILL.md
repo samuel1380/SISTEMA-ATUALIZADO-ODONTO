@@ -29,3 +29,4 @@ This skill provides safety protocols for executing database operations, migratio
 
 5. **Batch Processing for Large Datasets:**
    - When updating thousands of rows, process in indexed chunks (e.g., batches of 500-1000) to prevent lock contention, transaction timeouts, and excessive memory spikes.
+
