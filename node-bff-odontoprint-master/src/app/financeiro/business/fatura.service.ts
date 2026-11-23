@@ -778,7 +778,7 @@ export class FaturaService {
     // Usar Number() porque decimal do MySQL pode vir como string; tolerância 0.01 evita erro de arredondamento.
     const vPago = Number(fatura.valorPago ?? 0);
     const vTotal = Number(fatura.valorTotal ?? 0);
-    if (vTotal <= 0 || vPago >= vTotal - 0.01) {
+    if (vTotal > 0 && vPago >= vTotal - 0.01) {
       fatura.status = StatusFatura.PAGA;
     } else if (vPago > 0) {
       fatura.status = StatusFatura.PAGA_PARCIALMENTE;
@@ -2525,12 +2525,12 @@ export class FaturaService {
     const dataFimNormalizada = parseDataParaDataLocal(dataFimStr);
     const dataVencimento = new Date(ano, mes, 20); // Vencimento padrão: dia 20 do mês seguinte
 
-    // Busca faturas existentes para esta empresa cuja competência comece no mês informado
+    // Busca faturas existentes para esta empresa cuja competência seja o mês/ano informado
     const qb = faturaRepo.createQueryBuilder('fatura')
       .where('fatura.idEmpresa = :idEmpresa', { idEmpresa })
       .andWhere('fatura.status != :cancelada', { cancelada: StatusFatura.CANCELADA })
-      .andWhere('fatura.dataInicio >= :dataInicio', { dataInicio: dataInicioStr })
-      .andWhere('fatura.dataInicio <= :dataFim', { dataFim: dataFimStr })
+      .andWhere('EXTRACT(YEAR FROM fatura.dataInicio) = :ano', { ano })
+      .andWhere('EXTRACT(MONTH FROM fatura.dataInicio) = :mes', { mes })
       .orderBy('fatura.idFatura', 'DESC');
 
     const faturas = await qb.getMany();
@@ -2560,37 +2560,147 @@ export class FaturaService {
 
   /**
    * Reorganiza Ordens de Serviço / Trabalhos nas faturas correspondentes ao mês real de conclusão.
-   * Corrige situações onde trabalhos de um mês foram jogados para faturas de meses futuros (ex: nov -> dez).
+   * Realiza auditoria e saneamento completo:
+   * - Elimina faturas fantasmas abertas com 0 OSs e sem pagamentos.
+   * - Consolida faturas abertas duplicadas no mesmo mês para a mesma clínica em uma única fatura canônica.
+   * - Move OSs cujo trabalho foi concluído em mês diferente da fatura para a fatura do mês correto.
+   * - Recalcula todas as faturas abertas diretamente dos itens das OSs.
+   * - Sincroniza lançamentos financeiros e remove lançamentos de faturas canceladas.
    */
   async organizarFaturasNoMesCorreto(idEmpresa?: number): Promise<{
     faturasAjustadas: number;
     ordensMovidas: number;
     faturasVaziasRemovidas: number;
+    faturasDuplicadasConsolidadas: number;
     detalhes: string[];
   }> {
     return this.dataSource.transaction(async (manager) => {
       const faturaRepo = manager.getRepository(Fatura);
       const osRepo = manager.getRepository(OrdemServico);
       const lancamentoRepo = manager.getRepository(Lancamento);
+      const parcelaRepo = manager.getRepository(Parcela);
 
       const detalhes: string[] = [];
       let ordensMovidas = 0;
+      let faturasVaziasRemovidas = 0;
+      let faturasDuplicadasConsolidadas = 0;
       const faturasParaRecalcular = new Set<number>();
-      const faturasVaziasCandidatas = new Set<number>();
 
       // 1. Busca todas as faturas não canceladas
-      const qb = faturaRepo.createQueryBuilder('fatura')
+      const faturasQuery = faturaRepo
+        .createQueryBuilder('fatura')
         .leftJoinAndSelect('fatura.ordensDeServico', 'os')
         .leftJoinAndSelect('os.trabalho', 'trabalho')
         .where('fatura.status != :statusCancelada', { statusCancelada: StatusFatura.CANCELADA });
 
       if (idEmpresa) {
-        qb.andWhere('fatura.idEmpresa = :idEmpresa', { idEmpresa });
+        faturasQuery.andWhere('fatura.idEmpresa = :idEmpresa', { idEmpresa });
       }
 
-      const faturas = await qb.getMany();
+      const todasFaturas = await faturasQuery.getMany();
 
-      for (const fatura of faturas) {
+      // 2. DETECÇÃO E CONSOLIDAÇÃO DE DUPLICATAS ABERTAS NO MESMO MÊS/EMPRESA
+      const abertasPorEmpresaMes = new Map<string, Fatura[]>();
+      for (const fat of todasFaturas) {
+        if (fat.status === StatusFatura.ABERTA || fat.status === StatusFatura.AGUARDANDO_DEVOLUCAO) {
+          const info = extrairAnoMesDia(fat.dataInicio);
+          if (!info) continue;
+          const key = `${fat.idEmpresa}_${info.ano}_${info.mes}`;
+          if (!abertasPorEmpresaMes.has(key)) {
+            abertasPorEmpresaMes.set(key, []);
+          }
+          abertasPorEmpresaMes.get(key)!.push(fat);
+        }
+      }
+
+      for (const [, faturasGrupo] of abertasPorEmpresaMes.entries()) {
+        if (faturasGrupo.length > 1) {
+          // Ordena: prioriza a fatura que tiver mais OSs; desempate pelo maior ID
+          faturasGrupo.sort((a, b) => {
+            const countA = a.ordensDeServico?.length || 0;
+            const countB = b.ordensDeServico?.length || 0;
+            if (countB !== countA) return countB - countA;
+            return b.idFatura - a.idFatura;
+          });
+
+          const faturaCanonica = faturasGrupo[0];
+          const duplicatas = faturasGrupo.slice(1);
+
+          for (const dup of duplicatas) {
+            // Se a duplicata tinha OSs, move todas para a fatura canônica
+            if (dup.ordensDeServico && dup.ordensDeServico.length > 0) {
+              const idsOS = dup.ordensDeServico.map((os) => os.idOrdemServico);
+              await osRepo.update(idsOS, { fatura: faturaCanonica });
+              detalhes.push(
+                `${idsOS.length} OS(s) da Fatura duplicada #${dup.idFatura} foram migradas para a Fatura canônica #${faturaCanonica.idFatura}.`,
+              );
+            }
+
+            // Remove lançamentos e parcelas vinculadas à fatura duplicada
+            const lancamentosDup = await lancamentoRepo.find({ where: { idFatura: dup.idFatura } });
+            for (const lanc of lancamentosDup) {
+              await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
+              await lancamentoRepo.delete(lanc.idLancamento);
+            }
+
+            try {
+              await faturaRepo.delete(dup.idFatura);
+            } catch {
+              dup.status = StatusFatura.CANCELADA;
+              dup.valorTotal = 0;
+              dup.valorTotalBruto = 0;
+              dup.desconto = 0;
+              await faturaRepo.save(dup);
+            }
+
+            faturasDuplicadasConsolidadas++;
+            detalhes.push(`Fatura duplicada fantasma #${dup.idFatura} removida/cancelada.`);
+          }
+
+          faturasParaRecalcular.add(faturaCanonica.idFatura);
+        }
+      }
+
+      // 3. LIMPEZA DE QUALQUER FATURA ABERTA VAZIA (0 OSs e sem pagamentos)
+      const faturasAbertasAtuais = await faturaRepo.find({
+        where: { status: StatusFatura.ABERTA },
+        relations: ['ordensDeServico'],
+      });
+
+      for (const fat of faturasAbertasAtuais) {
+        const totalOs = fat.ordensDeServico ? fat.ordensDeServico.length : 0;
+        const vPago = Number(fat.valorPago || 0);
+
+        if (totalOs === 0 && vPago === 0) {
+          const lancamentos = await lancamentoRepo.find({ where: { idFatura: fat.idFatura } });
+          for (const lanc of lancamentos) {
+            await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
+            await lancamentoRepo.delete(lanc.idLancamento);
+          }
+
+          try {
+            await faturaRepo.delete(fat.idFatura);
+          } catch {
+            fat.status = StatusFatura.CANCELADA;
+            fat.valorTotal = 0;
+            fat.valorTotalBruto = 0;
+            fat.desconto = 0;
+            await faturaRepo.save(fat);
+          }
+          faturasVaziasRemovidas++;
+          detalhes.push(`Fatura vazia sem trabalhos #${fat.idFatura} removida/cancelada.`);
+        }
+      }
+
+      // 4. MOVIMENTAÇÃO DE OSs PARA O MÊS REAL DE CONCLUSÃO
+      const faturasRestantes = await faturaRepo
+        .createQueryBuilder('fatura')
+        .leftJoinAndSelect('fatura.ordensDeServico', 'os')
+        .leftJoinAndSelect('os.trabalho', 'trabalho')
+        .where('fatura.status != :statusCancelada', { statusCancelada: StatusFatura.CANCELADA })
+        .getMany();
+
+      for (const fatura of faturasRestantes) {
         const fatInfo = extrairAnoMesDia(fatura.dataInicio);
         if (!fatInfo) continue;
 
@@ -2611,7 +2721,6 @@ export class FaturaService {
           const osAno = osInfo.ano;
           const osMes = osInfo.mes;
 
-          // Se a data real de conclusão pertence a outro mês/ano em relação à fatura
           if (osAno !== fatAno || osMes !== fatMes) {
             const faturaCorreta = await this.obterOuCriarFaturaParaMesAno(
               manager,
@@ -2625,7 +2734,6 @@ export class FaturaService {
               ordensMovidas++;
               faturasParaRecalcular.add(fatura.idFatura);
               faturasParaRecalcular.add(faturaCorreta.idFatura);
-              faturasVaziasCandidatas.add(fatura.idFatura);
 
               detalhes.push(
                 `OS #${os.idOrdemServico} (Trabalho #${os.idTrabalho}, concluído em ${osInfo.ymd}) movida da Fatura #${fatura.idFatura} (${fatMes}/${fatAno}) para Fatura #${faturaCorreta.idFatura} (${osMes}/${osAno}).`,
@@ -2635,14 +2743,23 @@ export class FaturaService {
         }
       }
 
-      // 2. Recalcula todas as faturas afetadas
-      for (const idFat of faturasParaRecalcular) {
-        await this.recalcularFaturaComManager(manager, idFat);
+      // 5. RECÁLCULO DE TODAS AS FATURAS ABERTAS AFETADAS
+      const todasAbertas = await faturaRepo.find({
+        where: { status: StatusFatura.ABERTA },
+      });
+      for (const fat of todasAbertas) {
+        faturasParaRecalcular.add(fat.idFatura);
       }
 
-      // 3. Remove faturas que ficaram vazias (0 OSs), se abertas e com valor total 0
-      let faturasVaziasRemovidas = 0;
-      for (const idFat of faturasVaziasCandidatas) {
+      for (const idFat of faturasParaRecalcular) {
+        const faturaExistente = await faturaRepo.findOneBy({ idFatura: idFat });
+        if (faturaExistente && faturaExistente.status !== StatusFatura.CANCELADA) {
+          await this.recalcularFaturaComManager(manager, idFat);
+        }
+      }
+
+      // 6. SEGUNDA PASSAGEM: SE ALGUMA FATURA FICOU VAZIA APÓS MOVIMENTAÇÃO DE OSs
+      for (const idFat of faturasParaRecalcular) {
         const fatCheck = await faturaRepo.findOne({
           where: { idFatura: idFat },
           relations: ['ordensDeServico'],
@@ -2651,42 +2768,76 @@ export class FaturaService {
           fatCheck &&
           fatCheck.status === StatusFatura.ABERTA &&
           (!fatCheck.ordensDeServico || fatCheck.ordensDeServico.length === 0) &&
-          Number(fatCheck.valorTotal || 0) === 0
+          Number(fatCheck.valorPago || 0) === 0
         ) {
-          await lancamentoRepo.delete({ idFatura: idFat });
-          await faturaRepo.delete(idFat);
+          const lancamentos = await lancamentoRepo.find({ where: { idFatura: idFat } });
+          for (const lanc of lancamentos) {
+            await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
+            await lancamentoRepo.delete(lanc.idLancamento);
+          }
+          try {
+            await faturaRepo.delete(idFat);
+          } catch {
+            fatCheck.status = StatusFatura.CANCELADA;
+            fatCheck.valorTotal = 0;
+            fatCheck.valorTotalBruto = 0;
+            await faturaRepo.save(fatCheck);
+          }
           faturasVaziasRemovidas++;
-          detalhes.push(`Fatura vazia #${idFat} foi removida.`);
+          detalhes.push(`Fatura residual vazia #${idFat} removida/cancelada.`);
         }
       }
 
-      // 4. Sincroniza lançamentos vinculados a faturas com a data de competência correta (dataInicio da fatura)
+      // 7. SINCRONIZAÇÃO DE LANÇAMENTOS FINANCEIROS
       const lancamentosFatura = await lancamentoRepo.find({
         where: { idFatura: Not(IsNull()) },
       });
       for (const lanc of lancamentosFatura) {
         const faturaAtual = await faturaRepo.findOneBy({ idFatura: lanc.idFatura });
-        if (faturaAtual) {
-          const compInfo = extrairAnoMesDia(faturaAtual.dataInicio);
-          const lancInfo = extrairAnoMesDia(lanc.dataCompetencia);
-          if (compInfo && (!lancInfo || compInfo.ymd !== lancInfo.ymd)) {
-            lanc.dataCompetencia = parseDataParaDataLocal(compInfo.ymd);
-            await lancamentoRepo.save(lanc);
-            detalhes.push(
-              `Competência do Lançamento #${lanc.idLancamento} (Fatura #${faturaAtual.idFatura}) sincronizada para ${compInfo.ymd}.`,
-            );
+        if (!faturaAtual || faturaAtual.status === StatusFatura.CANCELADA) {
+          await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
+          await lancamentoRepo.delete(lanc.idLancamento);
+          detalhes.push(`Lançamento órfão #${lanc.idLancamento} removido.`);
+          continue;
+        }
+
+        const compInfo = extrairAnoMesDia(faturaAtual.dataInicio);
+        const lancInfo = extrairAnoMesDia(lanc.dataCompetencia);
+        let precisaSalvar = false;
+
+        if (compInfo && (!lancInfo || compInfo.ymd !== lancInfo.ymd)) {
+          lanc.dataCompetencia = parseDataParaDataLocal(compInfo.ymd);
+          precisaSalvar = true;
+        }
+
+        if (Number(lanc.valorTotal) !== Number(faturaAtual.valorTotal)) {
+          lanc.valorTotal = Number(faturaAtual.valorTotal);
+          precisaSalvar = true;
+
+          const parcelas = await parcelaRepo.find({ where: { idLancamento: lanc.idLancamento } });
+          if (parcelas.length === 1 && parcelas[0].status !== StatusParcela.PAGO) {
+            parcelas[0].valor = Number(faturaAtual.valorTotal);
+            await parcelaRepo.save(parcelas[0]);
           }
+        }
+
+        if (precisaSalvar) {
+          await lancamentoRepo.save(lanc);
+          detalhes.push(
+            `Lançamento #${lanc.idLancamento} (Fatura #${faturaAtual.idFatura}) sincronizado para R$ ${faturaAtual.valorTotal} (competência ${compInfo?.ymd}).`,
+          );
         }
       }
 
       this.logger.log(
-        `Organização concluída: ${ordensMovidas} OS movidas, ${faturasParaRecalcular.size} faturas ajustadas, ${faturasVaziasRemovidas} vazias removidas.`,
+        `Auditoria concluída: ${faturasDuplicadasConsolidadas} duplicadas consolidadas, ${faturasVaziasRemovidas} vazias removidas, ${ordensMovidas} OSs movidas, ${faturasParaRecalcular.size} faturas recalculadas.`,
       );
 
       return {
         faturasAjustadas: faturasParaRecalcular.size,
         ordensMovidas,
         faturasVaziasRemovidas,
+        faturasDuplicadasConsolidadas,
         detalhes,
       };
     });

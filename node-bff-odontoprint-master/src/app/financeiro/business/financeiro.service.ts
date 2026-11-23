@@ -1979,8 +1979,8 @@ export class FinanceiroService {
           .createQueryBuilder('fatura')
           .select('COALESCE(SUM(fatura.valorTotal), 0)', 'total')
           .where('fatura.status != :fatCancel', { fatCancel: StatusFatura.CANCELADA })
-          .andWhere('fatura.dataInicio >= :primeiroDiaMes', { primeiroDiaMes })
-          .andWhere('fatura.dataInicio <= :ultimoDiaMes', { ultimoDiaMes });
+          .andWhere('EXTRACT(YEAR FROM fatura.dataInicio) = :anoCol', { anoCol })
+          .andWhere('EXTRACT(MONTH FROM fatura.dataInicio) = :mesCol', { mesCol });
 
         if (idEmpresa != null) {
           qb.andWhere('fatura.idEmpresa = :idEmpresa', { idEmpresa });
