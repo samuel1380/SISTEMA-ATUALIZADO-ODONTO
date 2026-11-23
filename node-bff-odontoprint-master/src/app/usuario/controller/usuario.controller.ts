@@ -97,7 +97,8 @@ export class UsuarioController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto?: ResetarSenhaDto,
   ) {
-    return this.usuarioService.resetarSenha(id, dto?.novaSenha);
+    const novaSenha = dto?.novaSenha || (dto as any)?.senha;
+    return this.usuarioService.resetarSenha(id, novaSenha);
   }
 
   @Post('change-password')
