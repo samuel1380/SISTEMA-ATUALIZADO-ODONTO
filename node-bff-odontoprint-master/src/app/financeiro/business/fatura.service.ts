@@ -336,7 +336,7 @@ export class FaturaService {
 
         if (!faturaDestino) {
           throw new NotFoundException(
-            `Não foi possível encontrar ou criar uma fatura aberta para os próximos 12 meses a partir de ${mesReferencia + 1}/${anoReferencia}.`
+            `Não foi possível encontrar ou criar uma fatura para a competência ${mesReferencia + 1}/${anoReferencia}.`
           );
         }
       }
@@ -476,8 +476,8 @@ export class FaturaService {
   }
 
   /**
-   * Busca a próxima fatura disponível (aberta) a partir de um mês/ano específico.
-   * Se não encontrar, busca nos próximos 12 meses.
+   * Obtém a fatura aberta do mês/ano específico ou cria uma complementar no mesmo mês.
+   * NUNCA empurra trabalhos para meses futuros.
    */
   private async buscarProximaFaturaDisponivel(
     manager: EntityManager,
@@ -485,73 +485,12 @@ export class FaturaService {
     anoInicial: number,
     mesInicial: number
   ): Promise<Fatura | null> {
-    const faturaRepo = manager.getRepository(Fatura);
-
-    // Busca nas próximas 12 competências (meses)
-    for (let i = 1; i <= 12; i++) {
-      // Calcula o mês e ano corretamente
-      const mesTotal = mesInicial + i;
-      const ano = anoInicial + Math.floor(mesTotal / 12);
-      const mes = mesTotal % 12;
-
-      // Calcula primeiro e último dia do mês
-      const primeiroDiaMes = new Date(ano, mes, 1);
-      const ultimoDiaMes = new Date(ano, mes + 1, 0);
-      const dataVencimento = new Date(ano, mes + 1, 20);
-
-      // Formata as datas
-      const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-      const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-      
-      const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-      const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-
-      // Verifica se já existe uma fatura para esta competência
-      const faturaExistente = await faturaRepo.findOne({
-        where: {
-          idEmpresa: idEmpresa,
-          dataInicio: dataInicioNormalizada,
-          dataFim: dataFimNormalizada,
-        },
-      });
-
-      // Se existe e está aberta (ou aguardando devolução), retorna ela
-      const statusPermitidos = [StatusFatura.ABERTA, StatusFatura.AGUARDANDO_DEVOLUCAO];
-      if (faturaExistente && statusPermitidos.includes(faturaExistente.status)) {
-        this.logger.log(
-          `Fatura aberta/aguardando devolução encontrada para próxima vigência: empresa ${idEmpresa} - mês ${mes + 1}/${ano} (ID: ${faturaExistente.idFatura})`
-        );
-        return faturaExistente;
-      }
-
-      // Se não existe nenhuma fatura para esta competência, cria uma nova aberta
-      if (!faturaExistente) {
-        const novaFatura = faturaRepo.create({
-          idEmpresa: idEmpresa,
-          dataInicio: dataInicioNormalizada,
-          dataFim: dataFimNormalizada,
-          dataVencimento: dataVencimento,
-          valorTotalBruto: 0,
-          desconto: 0,
-          valorTotal: 0,
-          status: StatusFatura.ABERTA,
-        });
-
-        const faturaSalva = await faturaRepo.save(novaFatura);
-        this.logger.log(
-          `Nova fatura criada para próxima vigência: empresa ${idEmpresa} - mês ${mes + 1}/${ano} (ID: ${faturaSalva.idFatura})`
-        );
-        return faturaSalva;
-      }
-
-      // Se existe mas está fechada, continua procurando no próximo mês
-    }
-
-    // Se não encontrou nenhuma fatura disponível nos próximos 12 meses, retorna null
-    this.logger.warn(
-      `Não foi encontrada nenhuma fatura disponível nos próximos 12 meses para empresa ${idEmpresa} a partir de ${mesInicial + 1}/${anoInicial}`
+    return this.obterOuCriarFaturaParaMesAno(
+      manager,
+      idEmpresa,
+      anoInicial,
+      mesInicial + 1
     );
-    return null;
   }
 
   async fecharFatura(idFatura: number ): Promise<Fatura> {
@@ -2559,13 +2498,7 @@ export class FaturaService {
   }
 
   /**
-   * Reorganiza Ordens de Serviço / Trabalhos nas faturas correspondentes ao mês real de conclusão.
-   * Realiza auditoria e saneamento completo:
-   * - Elimina faturas fantasmas abertas com 0 OSs e sem pagamentos.
-   * - Consolida faturas abertas duplicadas no mesmo mês para a mesma clínica em uma única fatura canônica.
-   * - Move OSs cujo trabalho foi concluído em mês diferente da fatura para a fatura do mês correto.
-   * - Recalcula todas as faturas abertas diretamente dos itens das OSs.
-   * - Sincroniza lançamentos financeiros e remove lançamentos de faturas canceladas.
+   * Reorganização de faturas desativada permanentemente para proteger a integridade dos dados históricos.
    */
   async organizarFaturasNoMesCorreto(idEmpresa?: number): Promise<{
     faturasAjustadas: number;
@@ -2574,274 +2507,15 @@ export class FaturaService {
     faturasDuplicadasConsolidadas: number;
     detalhes: string[];
   }> {
-    return this.dataSource.transaction(async (manager) => {
-      const faturaRepo = manager.getRepository(Fatura);
-      const osRepo = manager.getRepository(OrdemServico);
-      const lancamentoRepo = manager.getRepository(Lancamento);
-      const parcelaRepo = manager.getRepository(Parcela);
-
-      const detalhes: string[] = [];
-      let ordensMovidas = 0;
-      let faturasVaziasRemovidas = 0;
-      let faturasDuplicadasConsolidadas = 0;
-      const faturasParaRecalcular = new Set<number>();
-
-      // 1. Busca todas as faturas não canceladas
-      const faturasQuery = faturaRepo
-        .createQueryBuilder('fatura')
-        .leftJoinAndSelect('fatura.ordensDeServico', 'os')
-        .leftJoinAndSelect('os.trabalho', 'trabalho')
-        .where('fatura.status != :statusCancelada', { statusCancelada: StatusFatura.CANCELADA });
-
-      if (idEmpresa) {
-        faturasQuery.andWhere('fatura.idEmpresa = :idEmpresa', { idEmpresa });
-      }
-
-      const todasFaturas = await faturasQuery.getMany();
-
-      // 2. DETECÇÃO E CONSOLIDAÇÃO DE DUPLICATAS ABERTAS NO MESMO MÊS/EMPRESA
-      const abertasPorEmpresaMes = new Map<string, Fatura[]>();
-      for (const fat of todasFaturas) {
-        if (fat.status === StatusFatura.ABERTA || fat.status === StatusFatura.AGUARDANDO_DEVOLUCAO) {
-          const info = extrairAnoMesDia(fat.dataInicio);
-          if (!info) continue;
-          const key = `${fat.idEmpresa}_${info.ano}_${info.mes}`;
-          if (!abertasPorEmpresaMes.has(key)) {
-            abertasPorEmpresaMes.set(key, []);
-          }
-          abertasPorEmpresaMes.get(key)!.push(fat);
-        }
-      }
-
-      for (const [, faturasGrupo] of abertasPorEmpresaMes.entries()) {
-        if (faturasGrupo.length > 1) {
-          // Ordena: prioriza a fatura que tiver mais OSs; desempate pelo maior ID
-          faturasGrupo.sort((a, b) => {
-            const countA = a.ordensDeServico?.length || 0;
-            const countB = b.ordensDeServico?.length || 0;
-            if (countB !== countA) return countB - countA;
-            return b.idFatura - a.idFatura;
-          });
-
-          const faturaCanonica = faturasGrupo[0];
-          const duplicatas = faturasGrupo.slice(1);
-
-          for (const dup of duplicatas) {
-            // Se a duplicata tinha OSs, move todas para a fatura canônica
-            if (dup.ordensDeServico && dup.ordensDeServico.length > 0) {
-              const idsOS = dup.ordensDeServico.map((os) => os.idOrdemServico);
-              await osRepo.update(idsOS, { fatura: faturaCanonica });
-              detalhes.push(
-                `${idsOS.length} OS(s) da Fatura duplicada #${dup.idFatura} foram migradas para a Fatura canônica #${faturaCanonica.idFatura}.`,
-              );
-            }
-
-            // Remove lançamentos e parcelas vinculadas à fatura duplicada
-            const lancamentosDup = await lancamentoRepo.find({ where: { idFatura: dup.idFatura } });
-            for (const lanc of lancamentosDup) {
-              await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
-              await lancamentoRepo.delete(lanc.idLancamento);
-            }
-
-            try {
-              await faturaRepo.delete(dup.idFatura);
-            } catch {
-              dup.status = StatusFatura.CANCELADA;
-              dup.valorTotal = 0;
-              dup.valorTotalBruto = 0;
-              dup.desconto = 0;
-              await faturaRepo.save(dup);
-            }
-
-            faturasDuplicadasConsolidadas++;
-            detalhes.push(`Fatura duplicada fantasma #${dup.idFatura} removida/cancelada.`);
-          }
-
-          faturasParaRecalcular.add(faturaCanonica.idFatura);
-        }
-      }
-
-      // 3. LIMPEZA DE QUALQUER FATURA ABERTA VAZIA (0 OSs e sem pagamentos)
-      const faturasAbertasAtuais = await faturaRepo.find({
-        where: { status: StatusFatura.ABERTA },
-        relations: ['ordensDeServico'],
-      });
-
-      for (const fat of faturasAbertasAtuais) {
-        const totalOs = fat.ordensDeServico ? fat.ordensDeServico.length : 0;
-        const vPago = Number(fat.valorPago || 0);
-
-        if (totalOs === 0 && vPago === 0) {
-          const lancamentos = await lancamentoRepo.find({ where: { idFatura: fat.idFatura } });
-          for (const lanc of lancamentos) {
-            await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
-            await lancamentoRepo.delete(lanc.idLancamento);
-          }
-
-          try {
-            await faturaRepo.delete(fat.idFatura);
-          } catch {
-            fat.status = StatusFatura.CANCELADA;
-            fat.valorTotal = 0;
-            fat.valorTotalBruto = 0;
-            fat.desconto = 0;
-            await faturaRepo.save(fat);
-          }
-          faturasVaziasRemovidas++;
-          detalhes.push(`Fatura vazia sem trabalhos #${fat.idFatura} removida/cancelada.`);
-        }
-      }
-
-      // 4. MOVIMENTAÇÃO DE OSs PARA O MÊS REAL DE CONCLUSÃO (apenas faturas abertas; faturas pagas/fechadas são intocáveis)
-      const faturasRestantes = await faturaRepo
-        .createQueryBuilder('fatura')
-        .leftJoinAndSelect('fatura.ordensDeServico', 'os')
-        .leftJoinAndSelect('os.trabalho', 'trabalho')
-        .where('fatura.status IN (:...statusAbertos)', {
-          statusAbertos: [StatusFatura.ABERTA, StatusFatura.AGUARDANDO_DEVOLUCAO],
-        })
-        .getMany();
-
-      for (const fatura of faturasRestantes) {
-        const fatInfo = extrairAnoMesDia(fatura.dataInicio);
-        if (!fatInfo) continue;
-
-        const fatAno = fatInfo.ano;
-        const fatMes = fatInfo.mes;
-
-        for (const os of fatura.ordensDeServico || []) {
-          const dataRef =
-            os.dataConcluido ||
-            os.trabalho?.dataConclusao ||
-            os.trabalho?.dataHoraEnvio ||
-            (os as any).dataInclusao;
-          if (!dataRef) continue;
-
-          const osInfo = extrairAnoMesDia(dataRef);
-          if (!osInfo) continue;
-
-          const osAno = osInfo.ano;
-          const osMes = osInfo.mes;
-
-          if (osAno !== fatAno || osMes !== fatMes) {
-            const faturaCorreta = await this.obterOuCriarFaturaParaMesAno(
-              manager,
-              fatura.idEmpresa,
-              osAno,
-              osMes,
-            );
-
-            if (faturaCorreta.idFatura !== fatura.idFatura) {
-              await osRepo.update(os.idOrdemServico, { fatura: faturaCorreta });
-              ordensMovidas++;
-              faturasParaRecalcular.add(fatura.idFatura);
-              faturasParaRecalcular.add(faturaCorreta.idFatura);
-
-              detalhes.push(
-                `OS #${os.idOrdemServico} (Trabalho #${os.idTrabalho}, concluído em ${osInfo.ymd}) movida da Fatura #${fatura.idFatura} (${fatMes}/${fatAno}) para Fatura #${faturaCorreta.idFatura} (${osMes}/${osAno}).`,
-              );
-            }
-          }
-        }
-      }
-
-      // 5. RECÁLCULO DE TODAS AS FATURAS ABERTAS AFETADAS
-      const todasAbertas = await faturaRepo.find({
-        where: { status: StatusFatura.ABERTA },
-      });
-      for (const fat of todasAbertas) {
-        faturasParaRecalcular.add(fat.idFatura);
-      }
-
-      for (const idFat of faturasParaRecalcular) {
-        const faturaExistente = await faturaRepo.findOneBy({ idFatura: idFat });
-        if (faturaExistente && faturaExistente.status !== StatusFatura.CANCELADA) {
-          await this.recalcularFaturaComManager(manager, idFat);
-        }
-      }
-
-      // 6. SEGUNDA PASSAGEM: SE ALGUMA FATURA FICOU VAZIA APÓS MOVIMENTAÇÃO DE OSs
-      for (const idFat of faturasParaRecalcular) {
-        const fatCheck = await faturaRepo.findOne({
-          where: { idFatura: idFat },
-          relations: ['ordensDeServico'],
-        });
-        if (
-          fatCheck &&
-          fatCheck.status === StatusFatura.ABERTA &&
-          (!fatCheck.ordensDeServico || fatCheck.ordensDeServico.length === 0) &&
-          Number(fatCheck.valorPago || 0) === 0
-        ) {
-          const lancamentos = await lancamentoRepo.find({ where: { idFatura: idFat } });
-          for (const lanc of lancamentos) {
-            await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
-            await lancamentoRepo.delete(lanc.idLancamento);
-          }
-          try {
-            await faturaRepo.delete(idFat);
-          } catch {
-            fatCheck.status = StatusFatura.CANCELADA;
-            fatCheck.valorTotal = 0;
-            fatCheck.valorTotalBruto = 0;
-            await faturaRepo.save(fatCheck);
-          }
-          faturasVaziasRemovidas++;
-          detalhes.push(`Fatura residual vazia #${idFat} removida/cancelada.`);
-        }
-      }
-
-      // 7. SINCRONIZAÇÃO DE LANÇAMENTOS FINANCEIROS
-      const lancamentosFatura = await lancamentoRepo.find({
-        where: { idFatura: Not(IsNull()) },
-      });
-      for (const lanc of lancamentosFatura) {
-        const faturaAtual = await faturaRepo.findOneBy({ idFatura: lanc.idFatura });
-        if (!faturaAtual || faturaAtual.status === StatusFatura.CANCELADA) {
-          await parcelaRepo.delete({ idLancamento: lanc.idLancamento });
-          await lancamentoRepo.delete(lanc.idLancamento);
-          detalhes.push(`Lançamento órfão #${lanc.idLancamento} removido.`);
-          continue;
-        }
-
-        const compInfo = extrairAnoMesDia(faturaAtual.dataInicio);
-        const lancInfo = extrairAnoMesDia(lanc.dataCompetencia);
-        let precisaSalvar = false;
-
-        if (compInfo && (!lancInfo || compInfo.ymd !== lancInfo.ymd)) {
-          lanc.dataCompetencia = parseDataParaDataLocal(compInfo.ymd);
-          precisaSalvar = true;
-        }
-
-        if (Number(lanc.valorTotal) !== Number(faturaAtual.valorTotal)) {
-          lanc.valorTotal = Number(faturaAtual.valorTotal);
-          precisaSalvar = true;
-
-          const parcelas = await parcelaRepo.find({ where: { idLancamento: lanc.idLancamento } });
-          if (parcelas.length === 1 && parcelas[0].status !== StatusParcela.PAGO) {
-            parcelas[0].valor = Number(faturaAtual.valorTotal);
-            await parcelaRepo.save(parcelas[0]);
-          }
-        }
-
-        if (precisaSalvar) {
-          await lancamentoRepo.save(lanc);
-          detalhes.push(
-            `Lançamento #${lanc.idLancamento} (Fatura #${faturaAtual.idFatura}) sincronizado para R$ ${faturaAtual.valorTotal} (competência ${compInfo?.ymd}).`,
-          );
-        }
-      }
-
-      this.logger.log(
-        `Auditoria concluída: ${faturasDuplicadasConsolidadas} duplicadas consolidadas, ${faturasVaziasRemovidas} vazias removidas, ${ordensMovidas} OSs movidas, ${faturasParaRecalcular.size} faturas recalculadas.`,
-      );
-
-      return {
-        faturasAjustadas: faturasParaRecalcular.size,
-        ordensMovidas,
-        faturasVaziasRemovidas,
-        faturasDuplicadasConsolidadas,
-        detalhes,
-      };
-    });
+    this.logger.warn(
+      'organizarFaturasNoMesCorreto desativado para preservar integridade dos dados históricos do financeiro.',
+    );
+    return {
+      faturasAjustadas: 0,
+      ordensMovidas: 0,
+      faturasVaziasRemovidas: 0,
+      faturasDuplicadasConsolidadas: 0,
+      detalhes: ['Função de reorganização desativada para manter histórico íntegro.'],
+    };
   }
 }
