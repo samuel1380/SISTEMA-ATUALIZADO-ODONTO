@@ -463,7 +463,6 @@ async function inspectOutubroSpecialCases(conn) {
     [divergentIds],
   );
 
-  const revertedIds = [676, 688, 694, 696, 697];
   const [revRows] = await conn.query(
     `SELECT
        f.idFatura,
@@ -478,13 +477,14 @@ async function inspectOutubroSpecialCases(conn) {
        l.status AS lanc_status,
        DATE_FORMAT(l.dataCompetencia, '%Y-%m-%d') AS lanc_comp,
        l.valorTotal AS lanc_val,
-       (SELECT COUNT(*) FROM TbFinanceiroParcela p WHERE p.idLancamento = l.idLancamento) AS qtd_parc
+       (SELECT COUNT(*) FROM TbFinanceiroParcela p WHERE p.idLancamento = l.idLancamento) AS qtd_parc,
+       (SELECT COALESCE(SUM(p.valorPago), 0) FROM TbFinanceiroParcela p WHERE p.idLancamento = l.idLancamento) AS soma_parc_paga
      FROM TbFinanceiroFatura f
      LEFT JOIN TbEmpresa e ON e.idEmpresa = f.idEmpresa
-     LEFT JOIN TbFinanceiroLancamento l ON l.idFatura = f.idFatura AND l.status != 'CANCELADO'
-     WHERE f.idFatura IN (?)
+     INNER JOIN TbFinanceiroLancamento l ON l.idFatura = f.idFatura AND l.status != 'CANCELADO'
+     WHERE f.status = 'ABERTA'
+       AND f.dataInicio >= '2026-10-01'
      ORDER BY f.idFatura ASC`,
-    [revertedIds],
   );
 
   return { divHeaders, divItems, revRows };
@@ -646,6 +646,13 @@ async function buildDryRunReport(conn) {
     log(`Impacto 2025: -R$ ${fmtMoney(total2025)} | Impacto Jan-Out/Dez 2026: -R$ ${fmtMoney(total2026)}`);
   }
 
+  const ghostIdSet = new Set(ghosts1.map((g) => g.idFatura));
+  const formatOutrasOut = (list) =>
+    list
+      .filter((o) => !ghostIdSet.has(o.idFatura))
+      .map((o) => `#${o.idFatura}(${o.status},R$${fmtMoney(o.valorTotal)})`)
+      .join(', ') || 'nenhuma (após limpeza Etapa 1)';
+
   // Etapa 2
   const { pureOctInNov, mixedOctInNov, mixedReadOnlyOctInNov } = await inspectOutubroNovembroPlan(conn);
   log('\n=== 2. ETAPA 2 — AJUSTES DE OUTUBRO/2026 QUE ESTÃO EM NOVEMBRO/2026 ===');
@@ -659,7 +666,7 @@ async function buildDryRunReport(conn) {
         status: x.fatura.status,
         valorTotal: fmtMoney(x.fatura.valorTotal),
         qtd_os: x.osList.length,
-        outras_out: x.existingOct.map((o) => `#${o.idFatura}(${o.status},R$${fmtMoney(o.valorTotal)})`).join(', ') || 'nenhuma',
+        outras_out: formatOutrasOut(x.existingOct),
         lancamentos: x.lancamentos.length,
         parcelas: x.parcelas.map((p) => `#${p.idParcela}(${p.status},venc=${p.venc})`).join(', ') || 'nenhuma',
       })),
@@ -678,7 +685,7 @@ async function buildDryRunReport(conn) {
         os_outubro_mover: x.octOs.length,
         val_os_outubro: fmtMoney(x.octOs.reduce((s, o) => s + Number(o.os_valor || 0), 0)),
         os_nov_ficam: x.otherOs.length,
-        outras_out: x.existingOct.map((o) => `#${o.idFatura}(${o.status})`).join(', ') || 'cria/reutiliza Out',
+        outras_out: formatOutrasOut(x.existingOct),
       })),
     );
   }
@@ -976,14 +983,44 @@ async function applyEtapa2And3(conn, bffRoot, flags) {
       log('\n>>> EXECUTANDO ETAPA 2C (flag --fechar-outubro-com-lancamento)...');
       const { revRows } = await inspectOutubroSpecialCases(conn);
       for (const r of revRows) {
-        if (r.status === 'ABERTA' && r.idLancamento && r.lanc_status !== 'CANCELADO') {
+        if (r.status !== 'ABERTA' || !r.idLancamento || r.lanc_status === 'CANCELADO') continue;
+        const vTotal = Number(r.valorTotal || 0);
+        const vPagoParc = Number(r.soma_parc_paga || 0);
+        const vPagoLanc = r.lanc_status === 'PAGO' ? (vPagoParc > 0 ? vPagoParc : Number(r.lanc_val || 0)) : vPagoParc;
+
+        if (r.lanc_status === 'PAGO' && vPagoLanc >= vTotal - 0.01) {
+          const pagoFinal = Math.min(vTotal, vPagoLanc);
+          await conn.beginTransaction();
+          try {
+            await conn.query(
+              `UPDATE TbFinanceiroFatura SET status = 'PAGA', valorPago = ? WHERE idFatura = ? AND status = 'ABERTA'`,
+              [pagoFinal, r.idFatura],
+            );
+            await conn.query(
+              `UPDATE TbOrdemServicoItem i
+               INNER JOIN TbOrdemServico os ON os.idOrdemServico = i.idOrdemServico
+               SET i.status = 'PAGO'
+               WHERE os.idFatura = ? AND i.status != 'DEVOLVIDO'`,
+              [r.idFatura],
+            );
+            await conn.commit();
+            log(`Fatura #${r.idFatura} restaurada para PAGA (valorPago=R$ ${fmtMoney(pagoFinal)}, lanc #${r.idLancamento} já estava PAGO).`);
+          } catch (err) {
+            await conn.rollback();
+            throw err;
+          }
+        } else if (vPagoLanc > 0 && vPagoLanc < vTotal - 0.01) {
+          await conn.query(
+            `UPDATE TbFinanceiroFatura SET status = 'PAGA_PARCIALMENTE', valorPago = ? WHERE idFatura = ? AND status = 'ABERTA'`,
+            [vPagoLanc, r.idFatura],
+          );
+          log(`Fatura #${r.idFatura} restaurada para PAGA_PARCIALMENTE (valorPago=R$ ${fmtMoney(vPagoLanc)}, lanc #${r.idLancamento}).`);
+        } else {
           await conn.query(
             `UPDATE TbFinanceiroFatura SET status = 'FECHADA' WHERE idFatura = ? AND status = 'ABERTA'`,
             [r.idFatura],
           );
-          log(`Fatura #${r.idFatura} restaurada para FECHADA (lançamento ativo #${r.idLancamento}).`);
-        } else {
-          log(`Fatura #${r.idFatura} mantida como ${r.status} (sem lançamento ativo correspondente).`);
+          log(`Fatura #${r.idFatura} restaurada para FECHADA (lançamento ativo #${r.idLancamento} ${r.lanc_status}).`);
         }
       }
     }
