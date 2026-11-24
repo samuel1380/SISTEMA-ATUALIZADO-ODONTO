@@ -103,9 +103,11 @@ function parseDotEnvFile(envPath) {
 }
 
 function loadDbConfig(bffRoot) {
-  const deployEnv = parseDotEnvFile('/home/ubuntu/node-bff-odontoprint/.env');
+  const repoEnv = parseDotEnvFile(path.resolve(__dirname, '../.env'));
   const localEnv = parseDotEnvFile(path.join(bffRoot, '.env'));
-  const merged = { ...localEnv, ...deployEnv };
+  const distEnv = parseDotEnvFile(path.join(bffRoot, 'dist/src/.env'));
+  const deployEnv = parseDotEnvFile('/home/ubuntu/node-bff-odontoprint/.env');
+  const merged = { ...repoEnv, ...localEnv, ...distEnv, ...deployEnv };
 
   for (const [k, v] of Object.entries(merged)) {
     if (!process.env[k] || process.env[k] === 'localhost') {
@@ -133,6 +135,13 @@ function loadDbConfig(bffRoot) {
   process.env.DATABASE_USERNAME = user;
   process.env.DATABASE_PASSWORD = password;
   process.env.DATABASE_NAME = database;
+
+  if (!process.env.CHAVE_SECRETA) {
+    process.env.CHAVE_SECRETA = 'cli-manutencao-secret';
+  }
+  if (!process.env.CHAVE_SECRETA_JWT) {
+    process.env.CHAVE_SECRETA_JWT = 'cli-manutencao-jwt-secret';
+  }
 
   return { host, port, user, password, database };
 }
