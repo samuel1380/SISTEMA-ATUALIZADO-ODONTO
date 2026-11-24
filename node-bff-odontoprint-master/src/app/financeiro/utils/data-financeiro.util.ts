@@ -32,11 +32,25 @@ export function formatDataYYYYMMDD(d: Date | string | null | undefined): string 
     return `${y}-${m}-${day}`;
   }
 
-  // Para outros casos (horário local do servidor ou data criada localmente)
-  const y = dateObj.getFullYear();
-  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  // Para outros casos (timestamps DATETIME), extrair data civil em Horário de Brasília (UTC-3)
+  // evita deslocamento de dia/mês na virada após 21h BRT quando o servidor roda em UTC.
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(dateObj);
+  const y = parts.find((p) => p.type === 'year')?.value;
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  if (y && m && day) {
+    return `${y}-${m}-${day}`;
+  }
+
+  const yf = dateObj.getFullYear();
+  const mf = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const dayf = String(dateObj.getDate()).padStart(2, '0');
+  return `${yf}-${mf}-${dayf}`;
 }
 
 /**

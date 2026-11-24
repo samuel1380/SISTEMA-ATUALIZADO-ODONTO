@@ -4,6 +4,7 @@ exports.formatDataYYYYMMDD = formatDataYYYYMMDD;
 exports.extrairAnoMesDia = extrairAnoMesDia;
 exports.parseDataParaDataLocal = parseDataParaDataLocal;
 function formatDataYYYYMMDD(d) {
+    var _a, _b, _c;
     if (!d)
         return '';
     if (typeof d === 'string') {
@@ -25,10 +26,22 @@ function formatDataYYYYMMDD(d) {
         const day = String(dateObj.getUTCDate()).padStart(2, '0');
         return `${y}-${m}-${day}`;
     }
-    const y = dateObj.getFullYear();
-    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-    const day = String(dateObj.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(dateObj);
+    const y = (_a = parts.find((p) => p.type === 'year')) === null || _a === void 0 ? void 0 : _a.value;
+    const m = (_b = parts.find((p) => p.type === 'month')) === null || _b === void 0 ? void 0 : _b.value;
+    const day = (_c = parts.find((p) => p.type === 'day')) === null || _c === void 0 ? void 0 : _c.value;
+    if (y && m && day) {
+        return `${y}-${m}-${day}`;
+    }
+    const yf = dateObj.getFullYear();
+    const mf = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dayf = String(dateObj.getDate()).padStart(2, '0');
+    return `${yf}-${mf}-${dayf}`;
 }
 function extrairAnoMesDia(d) {
     const ymd = formatDataYYYYMMDD(d);

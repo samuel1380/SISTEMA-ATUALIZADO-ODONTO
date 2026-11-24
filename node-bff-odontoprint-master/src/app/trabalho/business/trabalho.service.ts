@@ -957,7 +957,7 @@ export class TrabalhoService {
       osData.status = StatusOrdemServico.RECEBER;
       osData.concluido = true;
       if (!osData.dataConcluido) {
-        osData.dataConcluido = new Date();
+        osData.dataConcluido = trabalho.dataConclusao || trabalho.dataHoraEnvio || new Date();
       }
     } else {
       osData.status = StatusOrdemServico.PENDENTE;
@@ -1130,7 +1130,7 @@ export class TrabalhoService {
         osData.status = StatusOrdemServico.RECEBER;
         osData.concluido = true;
         if (!osData.dataConcluido) {
-          osData.dataConcluido = new Date();
+          osData.dataConcluido = trabalho.dataConclusao || trabalho.dataHoraEnvio || new Date();
         }
       } else {
         osData.status = StatusOrdemServico.PENDENTE;
@@ -1160,7 +1160,7 @@ export class TrabalhoService {
     let itens: OrdemServicoItem[] = [];
 
     const componentes = trabalho.componentes;
-    const itensComponentes = this.calculaComponentes(idUsuarioCadastro, trabalho.retrabalho, cadastroComplementar.utilizaInterfaces, componentes, itensBase);
+    const itensComponentes = this.calculaComponentes(idUsuarioCadastro, trabalho.retrabalho, !!cadastroComplementar?.utilizaInterfaces, componentes, itensBase);
     itens = itens.concat(itensComponentes);
 
     const elementos = trabalho.servicos.reduce((previous, current) => {

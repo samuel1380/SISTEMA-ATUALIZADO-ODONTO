@@ -748,7 +748,7 @@ let TrabalhoService = TrabalhoService_1 = class TrabalhoService {
             osData.status = ordemServico_entity_1.StatusOrdemServico.RECEBER;
             osData.concluido = true;
             if (!osData.dataConcluido) {
-                osData.dataConcluido = new Date();
+                osData.dataConcluido = trabalho.dataConclusao || trabalho.dataHoraEnvio || new Date();
             }
         }
         else {
@@ -874,7 +874,7 @@ let TrabalhoService = TrabalhoService_1 = class TrabalhoService {
                 osData.status = ordemServico_entity_1.StatusOrdemServico.RECEBER;
                 osData.concluido = true;
                 if (!osData.dataConcluido) {
-                    osData.dataConcluido = new Date();
+                    osData.dataConcluido = trabalho.dataConclusao || trabalho.dataHoraEnvio || new Date();
                 }
             }
             else {
@@ -899,7 +899,7 @@ let TrabalhoService = TrabalhoService_1 = class TrabalhoService {
     calculaItensOrdemServico(idUsuarioCadastro, trabalho, cadastroComplementar, tabelaPrecoProduto, itensBase, statusTrabalho) {
         let itens = [];
         const componentes = trabalho.componentes;
-        const itensComponentes = this.calculaComponentes(idUsuarioCadastro, trabalho.retrabalho, cadastroComplementar.utilizaInterfaces, componentes, itensBase);
+        const itensComponentes = this.calculaComponentes(idUsuarioCadastro, trabalho.retrabalho, !!(cadastroComplementar === null || cadastroComplementar === void 0 ? void 0 : cadastroComplementar.utilizaInterfaces), componentes, itensBase);
         itens = itens.concat(itensComponentes);
         const elementos = trabalho.servicos.reduce((previous, current) => {
             current.elementos;
