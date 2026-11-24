@@ -61,8 +61,8 @@ export class FaturaService {
       const osItemRepo = manager.getRepository(OrdemServicoItem);
 
       // Converte as strings de data para objetos Date, ignorando o fuso horário para comparação de data pura.
-      const dataInicio = new Date(`${dto.dataInicio}T00:00:00`);
-      const dataFim = new Date(`${dto.dataFim}T00:00:00`);
+      const dataInicio = parseDataParaDataLocal(dto.dataInicio);
+      const dataFim = parseDataParaDataLocal(dto.dataFim);
 
       // Validação: Verifica se já existe uma fatura aberta para o mesmo período e empresa.
       const faturaExistente = await faturaRepo.findOne({
@@ -94,11 +94,6 @@ export class FaturaService {
           return faturaExistente;
         }
 
-        const valorNovasOrdens = novasOrdensParaAdicionar.reduce((sum, os) => sum + Number(os.valorTotal), 0);
-        const valorBruto = Number(faturaExistente.valorTotalBruto || faturaExistente.valorTotal) + valorNovasOrdens;
-        const desconto = Number(faturaExistente.desconto || 0);
-        faturaExistente.valorTotalBruto = valorBruto;
-        faturaExistente.valorTotal = Math.max(0, valorBruto - desconto);
         await osRepo.update(novasOrdensParaAdicionar.map(os => os.idOrdemServico), { fatura: faturaExistente });
 
         // Atualiza o status dos itens das novas OS para FATURADO, mas preserva itens DEVOLVIDOS
@@ -117,7 +112,7 @@ export class FaturaService {
           );
         }
 
-        return faturaRepo.save(faturaExistente);
+        return this.recalcularFaturaComManager(manager, faturaExistente.idFatura);
       }
 
       const dataFimBusca = new Date(`${dto.dataFim}T23:59:59.999`); // Garante que a busca por OS inclua o dia todo no fuso local
@@ -192,19 +187,11 @@ export class FaturaService {
         const osParaRemover = await osRepo.findOneBy({ idOrdemServico, fatura: { idFatura } });
         if (!osParaRemover) throw new NotFoundException(`Ordem de Serviço ${idOrdemServico} não encontrada nesta fatura.`);
 
-        // Desvincula a OS da fatura
+        // Desvincula a OS da fatura e recalcula com base nos itens restantes
         await osRepo.update(idOrdemServico, { fatura: null });
+        await this.recalcularFaturaComManager(manager, idFatura);
 
-        // Recalcula o total da fatura (aplica desconto após subtrair)
-        const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) - Number(osParaRemover.valorTotal);
-        const desconto = Number(fatura.desconto || 0);
-        fatura.valorTotalBruto = valorBruto;
-        fatura.valorTotal = Math.max(0, valorBruto - desconto);
-        await faturaRepo.save(fatura);
-
-        // Retorna a fatura atualizada sem o item removido
-        fatura.ordensDeServico = fatura.ordensDeServico.filter(os => os.idOrdemServico !== idOrdemServico);
-        return fatura;
+        return this.buscarFaturaPorIdComManager(manager, idFatura);
     });
   }
 
@@ -273,70 +260,29 @@ export class FaturaService {
       } else if (dto.anoDestino && dto.mesDestino) {
         // Se foi especificado ano e mês de destino (1-12)
         const ano = Number(dto.anoDestino);
-        const mes = Number(dto.mesDestino) - 1; // 0-11
-        const ultimoDiaMes = new Date(ano, mes + 1, 0);
-        const dataVencimento = new Date(ano, mes + 1, 20);
-
-        const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-        const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-        const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-        const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-
-        const faturasComp = await faturaRepo.find({
-          where: {
-            idEmpresa,
-            dataInicio: dataInicioNormalizada,
-            dataFim: dataFimNormalizada,
-          },
-          order: { idFatura: 'DESC' },
-        });
-
-        const faturaAberta = faturasComp.find(
-          f => f.status === StatusFatura.ABERTA || f.status === StatusFatura.AGUARDANDO_DEVOLUCAO,
-        );
-
-        if (faturaAberta) {
-          faturaDestino = faturaAberta;
-        } else {
-          faturaDestino = faturaRepo.create({
-            idEmpresa,
-            dataInicio: dataInicioNormalizada,
-            dataFim: dataFimNormalizada,
-            dataVencimento,
-            valorTotalBruto: 0,
-            desconto: 0,
-            valorTotal: 0,
-            status: StatusFatura.ABERTA,
-            descricao: faturasComp.length > 0 ? 'Fatura Complementar' : undefined,
-          });
-          faturaDestino = await faturaRepo.save(faturaDestino);
+        const mes = Number(dto.mesDestino); // 1-12
+        if (isNaN(ano) || isNaN(mes) || mes < 1 || mes > 12) {
+          throw new BadRequestException('Mês/ano de destino inválido.');
         }
+
+        faturaDestino = await this.obterOuCriarFaturaParaMesAno(manager, idEmpresa, ano, mes);
       } else {
-        // Se não foi especificada, buscar a próxima fatura aberta do próximo mês
-        // Se existe fatura de origem, usa a data dela; caso contrário, usa a data de hoje
-        let dataReferencia: Date;
-        if (faturaOrigem) {
-          // Usa a data de fim da fatura de origem (que representa a competência)
-          dataReferencia = new Date(faturaOrigem.dataFim);
-        } else {
-          // Se não há fatura de origem, usa a data de hoje
-          dataReferencia = new Date();
+        // Sem fatura/mês específico: aloca na fatura aberta do mês da fatura de origem (ou mês atual), sem avançar meses
+        const infoRef = extrairAnoMesDia(faturaOrigem ? faturaOrigem.dataFim : new Date());
+        if (!infoRef) {
+          throw new BadRequestException('Não foi possível determinar a competência de referência.');
         }
 
-        const anoReferencia = dataReferencia.getFullYear();
-        const mesReferencia = dataReferencia.getMonth(); // 0-11 (janeiro = 0)
-
-        // Busca a próxima fatura disponível (aberta) a partir do próximo mês
         faturaDestino = await this.buscarProximaFaturaDisponivel(
           manager,
           idEmpresa,
-          anoReferencia,
-          mesReferencia
+          infoRef.ano,
+          infoRef.mes - 1
         );
 
         if (!faturaDestino) {
           throw new NotFoundException(
-            `Não foi possível encontrar ou criar uma fatura para a competência ${mesReferencia + 1}/${anoReferencia}.`
+            `Não foi possível encontrar ou criar uma fatura para a competência ${infoRef.mes}/${infoRef.ano}.`
           );
         }
       }
@@ -638,7 +584,7 @@ export class FaturaService {
     if (!fatura) {
       throw new NotFoundException(`Fatura com ID ${idFatura} não encontrada.`);
     }
-    if (fatura.status === StatusFatura.PAGA || fatura.status === StatusFatura.FECHADA) {
+    if (fatura.status === StatusFatura.PAGA || fatura.status === StatusFatura.FECHADA || fatura.status === StatusFatura.CANCELADA) {
       return fatura;
     }
 
@@ -721,6 +667,8 @@ export class FaturaService {
       fatura.status = StatusFatura.PAGA;
     } else if (vPago > 0) {
       fatura.status = StatusFatura.PAGA_PARCIALMENTE;
+    } else if (fatura.status === StatusFatura.AGUARDANDO_DEVOLUCAO) {
+      fatura.status = StatusFatura.AGUARDANDO_DEVOLUCAO;
     } else {
       fatura.status = StatusFatura.ABERTA;
     }
@@ -1599,13 +1547,7 @@ export class FaturaService {
           continue;
         }
 
-        // Adiciona as OS à fatura (aplica desconto após somar)
-        const valorNovasOrdens = ordensServico.reduce((sum, os) => sum + Number(os.valorTotal), 0);
-        const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) + valorNovasOrdens;
-        const desconto = Number(fatura.desconto || 0);
-        fatura.valorTotalBruto = valorBruto;
-        fatura.valorTotal = Math.max(0, valorBruto - desconto);
-
+        // Vincula as OS à fatura
         await osRepo.update(
           ordensServico.map(os => os.idOrdemServico),
           { fatura: fatura }
@@ -1635,7 +1577,8 @@ export class FaturaService {
           }
         }
 
-        await faturaRepo.save(fatura);
+        // Recalcula a fatura com base em todos os itens ativos vinculados (considera descontos e devoluções)
+        await this.recalcularFaturaComManager(manager, fatura.idFatura);
 
         totalAdicionados += ordensServico.length;
         
@@ -1645,8 +1588,8 @@ export class FaturaService {
           totalFaturasAtualizadas += 1;
         }
 
-        const dataInicioFormatada = new Date(fatura.dataInicio).toLocaleDateString('pt-BR');
-        const dataFimFormatada = new Date(fatura.dataFim).toLocaleDateString('pt-BR');
+        const dataInicioFormatada = formatDataLocalYYYYMMDD(fatura.dataInicio);
+        const dataFimFormatada = formatDataLocalYYYYMMDD(fatura.dataFim);
         this.logger.log(
           `Adicionadas ${ordensServico.length} OS à fatura ${fatura.idFatura} da empresa ${fatura.idEmpresa} (período: ${dataInicioFormatada} a ${dataFimFormatada})`
         );
@@ -1726,11 +1669,7 @@ export class FaturaService {
         mes,
       );
 
-      // Adiciona a OS à fatura (aplica desconto após somar)
-      const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) + Number(ordemServico.valorTotal);
-      const desconto = Number(fatura.desconto || 0);
-      fatura.valorTotalBruto = valorBruto;
-      fatura.valorTotal = Math.max(0, valorBruto - desconto);
+      // Vincula a OS à fatura
       await osRepo.update(ordemServico.idOrdemServico, { fatura: fatura });
 
       // Atualiza o status dos itens para FATURADO, mas preserva itens DEVOLVIDOS
@@ -1751,13 +1690,14 @@ export class FaturaService {
         }
       }
 
-      await faturaRepo.save(fatura);
+      // Recalcula a fatura considerando todos os itens ativos, descontos e devoluções
+      const faturaAtualizada = await this.recalcularFaturaComManager(manager, fatura.idFatura);
 
       this.logger.log(
         `Trabalho ${idTrabalho} (OS ${ordemServico.idOrdemServico}) adicionado à fatura ${fatura.idFatura}`
       );
 
-      return fatura;
+      return faturaAtualizada;
     });
   }
 

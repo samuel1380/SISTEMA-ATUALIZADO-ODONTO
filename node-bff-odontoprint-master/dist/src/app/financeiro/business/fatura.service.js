@@ -56,8 +56,8 @@ let FaturaService = FaturaService_1 = class FaturaService {
             const faturaRepo = manager.getRepository(fatura_entity_1.Fatura);
             const osRepo = manager.getRepository(ordemServico_entity_1.OrdemServico);
             const osItemRepo = manager.getRepository(ordemServicoItem_entity_1.OrdemServicoItem);
-            const dataInicio = new Date(`${dto.dataInicio}T00:00:00`);
-            const dataFim = new Date(`${dto.dataFim}T00:00:00`);
+            const dataInicio = (0, data_financeiro_util_1.parseDataParaDataLocal)(dto.dataInicio);
+            const dataFim = (0, data_financeiro_util_1.parseDataParaDataLocal)(dto.dataFim);
             const faturaExistente = await faturaRepo.findOne({
                 where: {
                     idEmpresa: dto.idEmpresa,
@@ -82,11 +82,6 @@ let FaturaService = FaturaService_1 = class FaturaService {
                     this.logger.log('Nenhuma nova Ordem de Serviço encontrada para adicionar à fatura existente.');
                     return faturaExistente;
                 }
-                const valorNovasOrdens = novasOrdensParaAdicionar.reduce((sum, os) => sum + Number(os.valorTotal), 0);
-                const valorBruto = Number(faturaExistente.valorTotalBruto || faturaExistente.valorTotal) + valorNovasOrdens;
-                const desconto = Number(faturaExistente.desconto || 0);
-                faturaExistente.valorTotalBruto = valorBruto;
-                faturaExistente.valorTotal = Math.max(0, valorBruto - desconto);
                 await osRepo.update(novasOrdensParaAdicionar.map(os => os.idOrdemServico), { fatura: faturaExistente });
                 const idsNovasOs = novasOrdensParaAdicionar.map(os => os.idOrdemServico);
                 const itensNovasOs = await osItemRepo.find({
@@ -99,7 +94,7 @@ let FaturaService = FaturaService_1 = class FaturaService {
                 if (idsItensParaAtualizar.length > 0) {
                     await osItemRepo.update({ idOrdemServicoItem: (0, typeorm_2.In)(idsItensParaAtualizar) }, { status: ordemServicoItem_entity_1.StatusOrdemServicoItem.FATURADO });
                 }
-                return faturaRepo.save(faturaExistente);
+                return this.recalcularFaturaComManager(manager, faturaExistente.idFatura);
             }
             const dataFimBusca = new Date(`${dto.dataFim}T23:59:59.999`);
             const ordensParaFaturar = await osRepo.find({
@@ -157,13 +152,8 @@ let FaturaService = FaturaService_1 = class FaturaService {
             if (!osParaRemover)
                 throw new common_1.NotFoundException(`Ordem de Serviço ${idOrdemServico} não encontrada nesta fatura.`);
             await osRepo.update(idOrdemServico, { fatura: null });
-            const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) - Number(osParaRemover.valorTotal);
-            const desconto = Number(fatura.desconto || 0);
-            fatura.valorTotalBruto = valorBruto;
-            fatura.valorTotal = Math.max(0, valorBruto - desconto);
-            await faturaRepo.save(fatura);
-            fatura.ordensDeServico = fatura.ordensDeServico.filter(os => os.idOrdemServico !== idOrdemServico);
-            return fatura;
+            await this.recalcularFaturaComManager(manager, idFatura);
+            return this.buscarFaturaPorIdComManager(manager, idFatura);
         });
     }
     async moverOrdemServicoFatura(dto) {
@@ -212,53 +202,20 @@ let FaturaService = FaturaService_1 = class FaturaService {
             }
             else if (dto.anoDestino && dto.mesDestino) {
                 const ano = Number(dto.anoDestino);
-                const mes = Number(dto.mesDestino) - 1;
-                const ultimoDiaMes = new Date(ano, mes + 1, 0);
-                const dataVencimento = new Date(ano, mes + 1, 20);
-                const dataInicioStr = `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
-                const dataFimStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDiaMes.getDate()).padStart(2, '0')}`;
-                const dataInicioNormalizada = new Date(`${dataInicioStr}T00:00:00`);
-                const dataFimNormalizada = new Date(`${dataFimStr}T00:00:00`);
-                const faturasComp = await faturaRepo.find({
-                    where: {
-                        idEmpresa,
-                        dataInicio: dataInicioNormalizada,
-                        dataFim: dataFimNormalizada,
-                    },
-                    order: { idFatura: 'DESC' },
-                });
-                const faturaAberta = faturasComp.find(f => f.status === fatura_entity_1.StatusFatura.ABERTA || f.status === fatura_entity_1.StatusFatura.AGUARDANDO_DEVOLUCAO);
-                if (faturaAberta) {
-                    faturaDestino = faturaAberta;
+                const mes = Number(dto.mesDestino);
+                if (isNaN(ano) || isNaN(mes) || mes < 1 || mes > 12) {
+                    throw new common_1.BadRequestException('Mês/ano de destino inválido.');
                 }
-                else {
-                    faturaDestino = faturaRepo.create({
-                        idEmpresa,
-                        dataInicio: dataInicioNormalizada,
-                        dataFim: dataFimNormalizada,
-                        dataVencimento,
-                        valorTotalBruto: 0,
-                        desconto: 0,
-                        valorTotal: 0,
-                        status: fatura_entity_1.StatusFatura.ABERTA,
-                        descricao: faturasComp.length > 0 ? 'Fatura Complementar' : undefined,
-                    });
-                    faturaDestino = await faturaRepo.save(faturaDestino);
-                }
+                faturaDestino = await this.obterOuCriarFaturaParaMesAno(manager, idEmpresa, ano, mes);
             }
             else {
-                let dataReferencia;
-                if (faturaOrigem) {
-                    dataReferencia = new Date(faturaOrigem.dataFim);
+                const infoRef = (0, data_financeiro_util_1.extrairAnoMesDia)(faturaOrigem ? faturaOrigem.dataFim : new Date());
+                if (!infoRef) {
+                    throw new common_1.BadRequestException('Não foi possível determinar a competência de referência.');
                 }
-                else {
-                    dataReferencia = new Date();
-                }
-                const anoReferencia = dataReferencia.getFullYear();
-                const mesReferencia = dataReferencia.getMonth();
-                faturaDestino = await this.buscarProximaFaturaDisponivel(manager, idEmpresa, anoReferencia, mesReferencia);
+                faturaDestino = await this.buscarProximaFaturaDisponivel(manager, idEmpresa, infoRef.ano, infoRef.mes - 1);
                 if (!faturaDestino) {
-                    throw new common_1.NotFoundException(`Não foi possível encontrar ou criar uma fatura para a competência ${mesReferencia + 1}/${anoReferencia}.`);
+                    throw new common_1.NotFoundException(`Não foi possível encontrar ou criar uma fatura para a competência ${infoRef.mes}/${infoRef.ano}.`);
                 }
             }
             await osRepo.update(dto.idOrdemServico, { fatura: faturaDestino });
@@ -460,7 +417,7 @@ let FaturaService = FaturaService_1 = class FaturaService {
         if (!fatura) {
             throw new common_1.NotFoundException(`Fatura com ID ${idFatura} não encontrada.`);
         }
-        if (fatura.status === fatura_entity_1.StatusFatura.PAGA || fatura.status === fatura_entity_1.StatusFatura.FECHADA) {
+        if (fatura.status === fatura_entity_1.StatusFatura.PAGA || fatura.status === fatura_entity_1.StatusFatura.FECHADA || fatura.status === fatura_entity_1.StatusFatura.CANCELADA) {
             return fatura;
         }
         const itensComTrabalho = await osItemRepo
@@ -524,6 +481,9 @@ let FaturaService = FaturaService_1 = class FaturaService {
         }
         else if (vPago > 0) {
             fatura.status = fatura_entity_1.StatusFatura.PAGA_PARCIALMENTE;
+        }
+        else if (fatura.status === fatura_entity_1.StatusFatura.AGUARDANDO_DEVOLUCAO) {
+            fatura.status = fatura_entity_1.StatusFatura.AGUARDANDO_DEVOLUCAO;
         }
         else {
             fatura.status = fatura_entity_1.StatusFatura.ABERTA;
@@ -1123,11 +1083,6 @@ let FaturaService = FaturaService_1 = class FaturaService {
                     this.logger.log(`Nenhuma OS pendente encontrada para os trabalhos da fatura ${fatura.idFatura}`);
                     continue;
                 }
-                const valorNovasOrdens = ordensServico.reduce((sum, os) => sum + Number(os.valorTotal), 0);
-                const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) + valorNovasOrdens;
-                const desconto = Number(fatura.desconto || 0);
-                fatura.valorTotalBruto = valorBruto;
-                fatura.valorTotal = Math.max(0, valorBruto - desconto);
                 await osRepo.update(ordensServico.map(os => os.idOrdemServico), { fatura: fatura });
                 const idsItens = ordensServico.flatMap(os => { var _a; return ((_a = os.itens) === null || _a === void 0 ? void 0 : _a.map(item => item.idOrdemServicoItem)) || []; });
                 if (idsItens.length > 0) {
@@ -1142,14 +1097,14 @@ let FaturaService = FaturaService_1 = class FaturaService {
                         await osItemRepo.update({ idOrdemServicoItem: (0, typeorm_2.In)(idsParaAtualizar) }, { status: ordemServicoItem_entity_1.StatusOrdemServicoItem.FATURADO });
                     }
                 }
-                await faturaRepo.save(fatura);
+                await this.recalcularFaturaComManager(manager, fatura.idFatura);
                 totalAdicionados += ordensServico.length;
                 if (!faturasProcessadas.has(fatura.idFatura)) {
                     faturasProcessadas.add(fatura.idFatura);
                     totalFaturasAtualizadas += 1;
                 }
-                const dataInicioFormatada = new Date(fatura.dataInicio).toLocaleDateString('pt-BR');
-                const dataFimFormatada = new Date(fatura.dataFim).toLocaleDateString('pt-BR');
+                const dataInicioFormatada = formatDataLocalYYYYMMDD(fatura.dataInicio);
+                const dataFimFormatada = formatDataLocalYYYYMMDD(fatura.dataFim);
                 this.logger.log(`Adicionadas ${ordensServico.length} OS à fatura ${fatura.idFatura} da empresa ${fatura.idEmpresa} (período: ${dataInicioFormatada} a ${dataFimFormatada})`);
             }
             return {
@@ -1200,10 +1155,6 @@ let FaturaService = FaturaService_1 = class FaturaService {
             const ano = info.ano;
             const mes = info.mes;
             const fatura = await this.obterOuCriarFaturaParaMesAno(manager, trabalho.idEmpresa, ano, mes);
-            const valorBruto = Number(fatura.valorTotalBruto || fatura.valorTotal) + Number(ordemServico.valorTotal);
-            const desconto = Number(fatura.desconto || 0);
-            fatura.valorTotalBruto = valorBruto;
-            fatura.valorTotal = Math.max(0, valorBruto - desconto);
             await osRepo.update(ordemServico.idOrdemServico, { fatura: fatura });
             if (ordemServico.itens && ordemServico.itens.length > 0) {
                 const idsItens = ordemServico.itens.map(item => item.idOrdemServicoItem);
@@ -1218,9 +1169,9 @@ let FaturaService = FaturaService_1 = class FaturaService {
                     await osItemRepo.update({ idOrdemServicoItem: (0, typeorm_2.In)(idsItensParaAtualizar) }, { status: ordemServicoItem_entity_1.StatusOrdemServicoItem.FATURADO });
                 }
             }
-            await faturaRepo.save(fatura);
+            const faturaAtualizada = await this.recalcularFaturaComManager(manager, fatura.idFatura);
             this.logger.log(`Trabalho ${idTrabalho} (OS ${ordemServico.idOrdemServico}) adicionado à fatura ${fatura.idFatura}`);
-            return fatura;
+            return faturaAtualizada;
         });
     }
     async lancarValorFatura(idFatura, dto) {
